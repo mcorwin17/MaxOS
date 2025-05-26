@@ -6,7 +6,7 @@
 ## MaxOS: Simple x86 Bootloader and Kernel
 About:
 This project is a basic x86 bootloader that loads a simple kernel from memory and displays characters to the screen using direct memory access to VGA text mode. (Self taught through books / online resources)
-
+Last worked on April 02 2025
 <!-- Overview of current functionality implemented in MaxOS -->
 What It Does:
 • Loads the kernel directly from disk to memory using assembly.
