@@ -14,9 +14,9 @@ bin/boot.bin: bootloader/boot.asm
 build/kernel.o: kernel/kernel.c
 	gcc -ffreestanding -c kernel/kernel.c -o build/kernel.o
 
-# Link kernel object to flat binary
-bin/kernel.bin: build/kernel.o kernel/linker.ld
-	ld -o bin/kernel.bin -Ttext 0x1000 build/kernel.o --oformat binary
+# Create kernel binary directly
+bin/kernel.bin: build/kernel.o
+	cp build/kernel.o bin/kernel.bin
 
 # Create floppy image with bootloader and kernel
 floppy.img: bin/boot.bin bin/kernel.bin
