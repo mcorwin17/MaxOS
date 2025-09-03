@@ -1,228 +1,420 @@
-// --------------------------------------------------
-// MaxOS Kernel - Cool Version
-// Description: Enhanced kernel with cool effects and animations
-// --------------------------------------------------
+/**
+ * @file kernel.c
+ * @brief MaxOS Kernel - Main System Implementation
+ * @author Maxwell Corwin
+ * @date 2025
+ * @version 2.0
+ * 
+ * This file contains the main kernel implementation for MaxOS, including
+ * system initialization, video memory management, and basic system services.
+ * The kernel operates in 32-bit protected mode with direct hardware access.
+ */
 
-// Forward declarations
-void main();
-void clear_screen();
+#include <stdint.h>
+#include <stddef.h>
+
+// =============================================================================
+// System Constants and Definitions
+// =============================================================================
+
+// Video memory configuration
+#define VIDEO_MEMORY_ADDRESS    0xB8000
+#define SCREEN_WIDTH           80
+#define SCREEN_HEIGHT          25
+#define CHARACTERS_PER_SCREEN  (SCREEN_WIDTH * SCREEN_HEIGHT)
+#define BYTES_PER_CHARACTER    2
+
+// Color definitions (VGA text mode attributes)
+#define COLOR_BLACK            0x00
+#define COLOR_BLUE             0x01
+#define COLOR_GREEN            0x02
+#define COLOR_CYAN             0x03
+#define COLOR_RED              0x04
+#define COLOR_MAGENTA          0x05
+#define COLOR_BROWN            0x06
+#define COLOR_LIGHT_GRAY       0x07
+#define COLOR_DARK_GRAY        0x08
+#define COLOR_LIGHT_BLUE       0x09
+#define COLOR_LIGHT_GREEN      0x0A
+#define COLOR_LIGHT_CYAN       0x0B
+#define COLOR_LIGHT_RED        0x0C
+#define COLOR_LIGHT_MAGENTA    0x0D
+#define COLOR_YELLOW           0x0E
+#define COLOR_WHITE            0x0F
+
+// Default color scheme
+#define DEFAULT_FOREGROUND     COLOR_WHITE
+#define DEFAULT_BACKGROUND     COLOR_BLACK
+#define DEFAULT_ATTRIBUTE      ((DEFAULT_BACKGROUND << 4) | DEFAULT_FOREGROUND)
+
+// System status constants
+#define SYSTEM_STATUS_READY    0x01
+#define SYSTEM_STATUS_ERROR    0x02
+#define SYSTEM_STATUS_WARNING  0x04
+
+// =============================================================================
+// Global Variables
+// =============================================================================
+
+// Cursor position tracking
+static struct {
+    uint8_t x;
+    uint8_t y;
+} cursor_position = {0, 0};
+
+// System status
+static uint8_t system_status = SYSTEM_STATUS_READY;
+
+// =============================================================================
+// Forward Declarations
+// =============================================================================
+
+void kernel_main(void);
+void system_initialize(void);
+void video_initialize(void);
+void clear_screen(void);
+void set_cursor_position(uint8_t x, uint8_t y);
+void print_character(char c);
 void print_string(const char* str);
-void print_char(char c);
-void set_cursor_position(int x, int y);
-void print_welcome_message();
-void print_system_info();
-void animate_logo();
-void draw_border();
-void print_colored_text(const char* str, int color);
-void delay(int ms);
+void print_colored_string(const char* str, uint8_t color);
+void print_system_banner(void);
+void print_system_information(void);
+void print_status_message(void);
+void scroll_screen(void);
+void delay_milliseconds(uint32_t ms);
+uint32_t get_system_uptime(void);
 
-// Video memory constants
-#define VIDEO_MEMORY 0xB8000
-#define SCREEN_WIDTH 80
-#define SCREEN_HEIGHT 25
-#define WHITE_ON_BLACK 0x07
-#define GREEN_ON_BLACK 0x0A
-#define RED_ON_BLACK 0x04
-#define BLUE_ON_BLACK 0x01
-#define CYAN_ON_BLACK 0x0B
-#define YELLOW_ON_BLACK 0x0E
-#define MAGENTA_ON_BLACK 0x0D
-#define BRIGHT_WHITE_ON_BLACK 0x0F
+// =============================================================================
+// Kernel Entry Point
+// =============================================================================
 
-// Global variables
-static int cursor_x = 0;
-static int cursor_y = 0;
-
-// Entry point that the bootloader calls
-void _start() {
-    main();
-    // Infinite loop to prevent the system from hanging
-    while(1) {
-        // Just loop forever
+/**
+ * @brief Kernel entry point called by bootloader
+ * 
+ * This function is the main entry point for the kernel after the bootloader
+ * transfers control. It initializes the system and enters the main loop.
+ */
+void _start(void) {
+    kernel_main();
+    
+    // Infinite loop to prevent system hang
+    while (1) {
+        // System idle - could be extended with task scheduling
+        __asm__ volatile("hlt");
     }
 }
 
-void main() {
-    // Clear the screen and set up
+// =============================================================================
+// Main Kernel Function
+// =============================================================================
+
+/**
+ * @brief Main kernel function
+ * 
+ * Initializes the system, displays startup information, and prepares
+ * the system for user interaction.
+ */
+void kernel_main(void) {
+    // Initialize system components
+    system_initialize();
+    
+    // Display system banner
+    print_system_banner();
+    
+    // Display system information
+    print_system_information();
+    
+    // Display status and prompt
+    print_status_message();
+    
+    // System is now ready for operation
+    system_status = SYSTEM_STATUS_READY;
+}
+
+// =============================================================================
+// System Initialization
+// =============================================================================
+
+/**
+ * @brief Initialize system components
+ * 
+ * Sets up video memory, clears the screen, and prepares the system
+ * for operation.
+ */
+void system_initialize(void) {
+    video_initialize();
     clear_screen();
     
-    // Draw a cool border
-    draw_border();
-    
-    // Animate the logo
-    animate_logo();
-    
-    // Print welcome message
-    print_welcome_message();
-    
-    // Print system information
-    print_system_info();
-    
-    // Print a cool command prompt
-    set_cursor_position(0, 20);
-    print_colored_text("MaxOS v2.0 - Ready for action!", CYAN_ON_BLACK);
-    set_cursor_position(0, 21);
-    print_colored_text("Type 'help' for commands", YELLOW_ON_BLACK);
-    set_cursor_position(0, 22);
-    print_colored_text("> ", BRIGHT_WHITE_ON_BLACK);
+    // Set initial cursor position
+    set_cursor_position(0, 0);
 }
 
-void clear_screen() {
-    char* video_memory = (char*) VIDEO_MEMORY;
-    for(int i = 0; i < SCREEN_WIDTH * SCREEN_HEIGHT * 2; i += 2) {
-        video_memory[i] = ' ';      // Space character
-        video_memory[i + 1] = WHITE_ON_BLACK;  // White on black
+/**
+ * @brief Initialize video system
+ * 
+ * Sets up the video memory and prepares the display for output.
+ */
+void video_initialize(void) {
+    // Video memory is already mapped by the bootloader
+    // No additional initialization required for VGA text mode
+}
+
+// =============================================================================
+// Video Memory Management
+// =============================================================================
+
+/**
+ * @brief Clear the entire screen
+ * 
+ * Fills the video memory with space characters and default attributes,
+ * effectively clearing the display.
+ */
+void clear_screen(void) {
+    volatile uint16_t* video_memory = (volatile uint16_t*)VIDEO_MEMORY_ADDRESS;
+    
+    for (size_t i = 0; i < CHARACTERS_PER_SCREEN; ++i) {
+        video_memory[i] = (' ' | (DEFAULT_ATTRIBUTE << 8));
     }
-    cursor_x = 0;
-    cursor_y = 0;
+    
+    cursor_position.x = 0;
+    cursor_position.y = 0;
 }
 
-void print_char(char c) {
-    if(c == '\n') {
-        cursor_x = 0;
-        cursor_y++;
-        if(cursor_y >= SCREEN_HEIGHT) {
-            cursor_y = SCREEN_HEIGHT - 1;
-            // Scroll screen up (simple implementation)
-            char* video_memory = (char*) VIDEO_MEMORY;
-            for(int i = 0; i < (SCREEN_HEIGHT - 1) * SCREEN_WIDTH * 2; i++) {
-                video_memory[i] = video_memory[i + SCREEN_WIDTH * 2];
+/**
+ * @brief Set cursor position
+ * 
+ * @param x X coordinate (0-79)
+ * @param y Y coordinate (0-24)
+ */
+void set_cursor_position(uint8_t x, uint8_t y) {
+    if (x >= SCREEN_WIDTH) x = SCREEN_WIDTH - 1;
+    if (y >= SCREEN_HEIGHT) y = SCREEN_HEIGHT - 1;
+    
+    cursor_position.x = x;
+    cursor_position.y = y;
+}
+
+/**
+ * @brief Print a single character
+ * 
+ * @param c Character to print
+ */
+void print_character(char c) {
+    volatile uint16_t* video_memory = (volatile uint16_t*)VIDEO_MEMORY_ADDRESS;
+    
+    if (c == '\n') {
+        // Newline: move to beginning of next line
+        cursor_position.x = 0;
+        cursor_position.y++;
+        
+        if (cursor_position.y >= SCREEN_HEIGHT) {
+            scroll_screen();
+            cursor_position.y = SCREEN_HEIGHT - 1;
+        }
+        return;
+    }
+    
+    if (c == '\r') {
+        // Carriage return: move to beginning of current line
+        cursor_position.x = 0;
+        return;
+    }
+    
+    if (c == '\t') {
+        // Tab: move to next tab stop (every 8 characters)
+        cursor_position.x = (cursor_position.x + 8) & 0xF8;
+        if (cursor_position.x >= SCREEN_WIDTH) {
+            cursor_position.x = 0;
+            cursor_position.y++;
+        }
+        return;
+    }
+    
+    // Calculate memory offset for current cursor position
+    size_t offset = cursor_position.y * SCREEN_WIDTH + cursor_position.x;
+    
+    // Write character and attribute to video memory
+    video_memory[offset] = (c | (DEFAULT_ATTRIBUTE << 8));
+    
+    // Advance cursor position
+    cursor_position.x++;
+    if (cursor_position.x >= SCREEN_WIDTH) {
+        cursor_position.x = 0;
+        cursor_position.y++;
+        
+        if (cursor_position.y >= SCREEN_HEIGHT) {
+            scroll_screen();
+            cursor_position.y = SCREEN_HEIGHT - 1;
+        }
+    }
+}
+
+/**
+ * @brief Print a null-terminated string
+ * 
+ * @param str String to print
+ */
+void print_string(const char* str) {
+    if (!str) return;
+    
+    for (size_t i = 0; str[i] != '\0'; ++i) {
+        print_character(str[i]);
+    }
+}
+
+/**
+ * @brief Print a colored string
+ * 
+ * @param str String to print
+ * @param color Color attribute to use
+ */
+void print_colored_string(const char* str, uint8_t color) {
+    if (!str) return;
+    
+    volatile uint16_t* video_memory = (volatile uint16_t*)VIDEO_MEMORY_ADDRESS;
+    size_t start_offset = cursor_position.y * SCREEN_WIDTH + cursor_position.x;
+    
+    for (size_t i = 0; str[i] != '\0'; ++i) {
+        if (str[i] == '\n') {
+            print_character('\n');
+            start_offset = cursor_position.y * SCREEN_WIDTH + cursor_position.x;
+        } else {
+            size_t offset = cursor_position.y * SCREEN_WIDTH + cursor_position.x;
+            video_memory[offset] = (str[i] | (color << 8));
+            
+            cursor_position.x++;
+            if (cursor_position.x >= SCREEN_WIDTH) {
+                cursor_position.x = 0;
+                cursor_position.y++;
+                if (cursor_position.y >= SCREEN_HEIGHT) {
+                    scroll_screen();
+                    cursor_position.y = SCREEN_HEIGHT - 1;
+                }
             }
         }
-        return;
-    }
-    
-    if(c == '\r') {
-        cursor_x = 0;
-        return;
-    }
-    
-    char* video_memory = (char*) VIDEO_MEMORY;
-    int offset = (cursor_y * SCREEN_WIDTH + cursor_x) * 2;
-    video_memory[offset] = c;
-    video_memory[offset + 1] = WHITE_ON_BLACK;
-    
-    cursor_x++;
-    if(cursor_x >= SCREEN_WIDTH) {
-        cursor_x = 0;
-        cursor_y++;
-        if(cursor_y >= SCREEN_HEIGHT) {
-            cursor_y = SCREEN_HEIGHT - 1;
-        }
     }
 }
 
-void print_string(const char* str) {
-    while(*str) {
-        print_char(*str);
-        str++;
-    }
-}
-
-void print_colored_text(const char* str, int color) {
-    char* video_memory = (char*) VIDEO_MEMORY;
-    int start_offset = (cursor_y * SCREEN_WIDTH + cursor_x) * 2;
-    int offset = start_offset;
+/**
+ * @brief Scroll the screen up by one line
+ * 
+ * Moves all lines up by one, clearing the bottom line for new content.
+ */
+void scroll_screen(void) {
+    volatile uint16_t* video_memory = (volatile uint16_t*)VIDEO_MEMORY_ADDRESS;
     
-    while(*str) {
-        if(*str == '\n') {
-            cursor_x = 0;
-            cursor_y++;
-            offset = (cursor_y * SCREEN_WIDTH + cursor_x) * 2;
-        } else {
-            video_memory[offset] = *str;
-            video_memory[offset + 1] = color;
-            offset += 2;
-            cursor_x++;
-        }
-        str++;
-        
-        if(cursor_x >= SCREEN_WIDTH) {
-            cursor_x = 0;
-            cursor_y++;
-            offset = (cursor_y * SCREEN_WIDTH + cursor_x) * 2;
-        }
+    // Move all lines up by one
+    for (size_t i = 0; i < (SCREEN_HEIGHT - 1) * SCREEN_WIDTH; ++i) {
+        video_memory[i] = video_memory[i + SCREEN_WIDTH];
+    }
+    
+    // Clear the bottom line
+    size_t bottom_line_start = (SCREEN_HEIGHT - 1) * SCREEN_WIDTH;
+    for (size_t i = 0; i < SCREEN_WIDTH; ++i) {
+        video_memory[bottom_line_start + i] = (' ' | (DEFAULT_ATTRIBUTE << 8));
     }
 }
 
-void set_cursor_position(int x, int y) {
-    cursor_x = x;
-    cursor_y = y;
-    if(cursor_x >= SCREEN_WIDTH) cursor_x = SCREEN_WIDTH - 1;
-    if(cursor_y >= SCREEN_HEIGHT) cursor_y = SCREEN_HEIGHT - 1;
+// =============================================================================
+// System Display Functions
+// =============================================================================
+
+/**
+ * @brief Display system banner
+ * 
+ * Shows the MaxOS logo and version information with animated effects.
+ */
+void print_system_banner(void) {
+    set_cursor_position(0, 2);
+    
+    // Print MaxOS logo with color animation
+    const char* logo[] = {
+        "  __  __       _  ___   ___ ",
+        " |  \\/  |     / \\/ __\\ / __\\",
+        " | \\  / |    / _ \\__ \\ / /   ",
+        " | |\\/| |   / ___ \\__// /___ ",
+        " |_|  |_|  /_/   \\_\\/_____| "
+    };
+    
+    for (int i = 0; i < 5; ++i) {
+        set_cursor_position(25, 2 + i);
+        print_colored_string(logo[i], COLOR_CYAN);
+        delay_milliseconds(100);
+    }
+    
+    set_cursor_position(0, 8);
+    print_colored_string("MaxOS v2.0 - Educational Operating System", COLOR_YELLOW);
+    set_cursor_position(0, 9);
+    print_colored_string("Built for learning and computer science education", COLOR_LIGHT_GRAY);
 }
 
-void delay(int ms) {
-    // Simple delay loop
-    for(int i = 0; i < ms * 1000; i++) {
+/**
+ * @brief Display system information
+ * 
+ * Shows technical details about the system configuration and capabilities.
+ */
+void print_system_information(void) {
+    set_cursor_position(0, 12);
+    print_colored_string("System Information:", COLOR_LIGHT_GREEN);
+    
+    set_cursor_position(2, 13);
+    print_string("Architecture: x86 (32-bit protected mode)");
+    
+    set_cursor_position(2, 14);
+    print_string("Memory Model: Flat memory model with segmentation");
+    
+    set_cursor_position(2, 15);
+    print_string("Video Mode: VGA text mode (80x25, 16 colors)");
+    
+    set_cursor_position(2, 16);
+    print_string("Boot Method: BIOS bootloader with kernel loading");
+    
+    set_cursor_position(2, 17);
+    print_string("System Status: Initialized and ready");
+}
+
+/**
+ * @brief Display status message and command prompt
+ * 
+ * Shows the system status and provides a command prompt interface.
+ */
+void print_status_message(void) {
+    set_cursor_position(0, 20);
+    print_colored_string("System Status: Ready", COLOR_LIGHT_GREEN);
+    
+    set_cursor_position(0, 21);
+    print_colored_string("Available Commands: help, info, status, clear", COLOR_YELLOW);
+    
+    set_cursor_position(0, 22);
+    print_colored_string("Type 'help' for command information", COLOR_LIGHT_GRAY);
+    
+    set_cursor_position(0, 23);
+    print_colored_string("> ", COLOR_WHITE);
+}
+
+// =============================================================================
+// Utility Functions
+// =============================================================================
+
+/**
+ * @brief Simple delay function
+ * 
+ * @param ms Milliseconds to delay (approximate)
+ */
+void delay_milliseconds(uint32_t ms) {
+    // Simple busy-wait delay (not accurate but functional)
+    for (volatile uint32_t i = 0; i < ms * 10000; ++i) {
         __asm__ volatile("nop");
     }
 }
 
-void draw_border() {
-    char* video_memory = (char*) VIDEO_MEMORY;
-    
-    // Draw top border
-    for(int i = 0; i < SCREEN_WIDTH; i++) {
-        video_memory[i * 2] = '=';
-        video_memory[i * 2 + 1] = CYAN_ON_BLACK;
-    }
-    
-    // Draw bottom border
-    int bottom_offset = (SCREEN_HEIGHT - 1) * SCREEN_WIDTH * 2;
-    for(int i = 0; i < SCREEN_WIDTH; i++) {
-        video_memory[bottom_offset + i * 2] = '=';
-        video_memory[bottom_offset + i * 2 + 1] = CYAN_ON_BLACK;
-    }
-    
-    // Draw left and right borders
-    for(int y = 1; y < SCREEN_HEIGHT - 1; y++) {
-        video_memory[y * SCREEN_WIDTH * 2] = '|';
-        video_memory[y * SCREEN_WIDTH * 2 + 1] = CYAN_ON_BLACK;
-        video_memory[y * SCREEN_WIDTH * 2 + (SCREEN_WIDTH - 1) * 2] = '|';
-        video_memory[y * SCREEN_WIDTH * 2 + (SCREEN_WIDTH - 1) * 2 + 1] = CYAN_ON_BLACK;
-    }
-}
-
-void animate_logo() {
-    set_cursor_position(30, 2);
-    print_colored_text("M", RED_ON_BLACK);
-    delay(100);
-    print_colored_text("A", GREEN_ON_BLACK);
-    delay(100);
-    print_colored_text("X", BLUE_ON_BLACK);
-    delay(100);
-    print_colored_text("O", YELLOW_ON_BLACK);
-    delay(100);
-    print_colored_text("S", MAGENTA_ON_BLACK);
-    delay(100);
-    
-    set_cursor_position(28, 3);
-    print_colored_text("OPERATING SYSTEM", CYAN_ON_BLACK);
-    delay(200);
-    
-    set_cursor_position(25, 4);
-    print_colored_text("v2.0 - Enhanced Edition", BRIGHT_WHITE_ON_BLACK);
-}
-
-void print_welcome_message() {
-    set_cursor_position(2, 6);
-    print_colored_text("Welcome to the future of computing!", GREEN_ON_BLACK);
-    set_cursor_position(2, 7);
-    print_colored_text("MaxOS is now running in protected mode", YELLOW_ON_BLACK);
-}
-
-void print_system_info() {
-    set_cursor_position(2, 9);
-    print_colored_text("System Information:", BRIGHT_WHITE_ON_BLACK);
-    set_cursor_position(2, 10);
-    print_colored_text("- OS: MaxOS v2.0 Enhanced", WHITE_ON_BLACK);
-    set_cursor_position(2, 11);
-    print_colored_text("- Architecture: x86 (32-bit Protected Mode)", WHITE_ON_BLACK);
-    set_cursor_position(2, 12);
-    print_colored_text("- Memory: 16MB available", WHITE_ON_BLACK);
-    set_cursor_position(2, 13);
-    print_colored_text("- Status: All systems operational", GREEN_ON_BLACK);
-    set_cursor_position(2, 14);
-    print_colored_text("- Features: Enhanced graphics, animations", CYAN_ON_BLACK);
+/**
+ * @brief Get system uptime
+ * 
+ * @return Approximate uptime in milliseconds
+ */
+uint32_t get_system_uptime(void) {
+    // Placeholder for future implementation
+    // Could use PIT timer or RTC for accurate timing
+    return 0;
 }
