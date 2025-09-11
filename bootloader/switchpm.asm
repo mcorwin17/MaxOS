@@ -1,38 +1,30 @@
-; --------------------------------------------------
-; File: switch_to_pm.asm
-; Description: Switches CPU from real mode to protected mode
-; --------------------------------------------------
+; Real mode -> 32-bit protected mode.
+; Ends in [bits 32], so don't include 16-bit code after this file.
 
-switch_to_pm:
-    ; Disable interrupts during mode switch
-    cli
-    ; Load Global Descriptor Table
+[bits 16]
+
+switch_to_protected_mode:
+    cli                         ; real-mode IVT is about to be meaningless
     lgdt [gdt_descriptor]
 
-    ; Read CR0 (control register)
     mov eax, cr0
-    ; Set the PE (Protection Enable) bit
-    or eax, 1
-    ; Write back to CR0 to enable protected mode
+    or  eax, 0x1                ; PE
     mov cr0, eax
 
-    ; Far jump to flush pipeline and switch to 32-bit mode
+    ; far jump to load CS with a pm selector and flush the prefetch queue
     jmp CODE_SEG:init_pm
 
 [bits 32]
-init_pm:
-    ; Set up segment registers for protected mode
-    mov ax, DATA_SEG
-    mov ds, ax    ; Data Segment
-    mov ss, ax    ; Stack Segment
-    mov es, ax    ; Extra Segment
-    mov fs, ax    ; FS Segment
-    mov gs, ax    ; GS Segment
 
-    ; Initialize base pointer
+init_pm:
+    mov ax, DATA_SEG
+    mov ds, ax
+    mov ss, ax
+    mov es, ax
+    mov fs, ax
+    mov gs, ax
+
     mov ebp, 0x90000
-    ; Initialize stack pointer
     mov esp, ebp
 
-    ; Jump to main protected mode code
-    call BEGIN_PM
+    jmp KERNEL_OFFSET           ; kernel never returns
