@@ -1,34 +1,31 @@
-; --------------------------------------------------
-; Function: print_string_pm
-; Description: Prints a null-terminated string to screen in protected mode
-; Assumes: EBX points to the string, uses EDI to access video memory
-; --------------------------------------------------
+; print_string_pm - print a string in protected mode.
+; No BIOS here, so write straight into the VGA text buffer.
+;
+; in:  ebx = null-terminated string
+; all registers preserved
+
 [bits 32]
 
-; Define constants for video memory and color attributes
-VIDEO_MEMORY equ 0xb8000
+VIDEO_MEMORY   equ 0xB8000
 GREEN_ON_BLACK equ 0x0A
 
-; Main loop to read and print characters
-print_string_pm_loop:
-    mov al, [ebx]          ; Load character from string
-    mov ah, GREEN_ON_BLACK ; Set text color
+print_string_pm:
+    pusha
+    mov edi, VIDEO_MEMORY
 
-    cmp al, 0              ; Check for null terminator
-    je print_string_pm_done ; Exit loop if null terminator is found
+.loop:
+    mov al, [ebx]
+    mov ah, GREEN_ON_BLACK
 
-    mov [edi], ax          ; Write character and attribute to video memory
+    test al, al
+    jz .done
 
-    add ebx, 1             ; Move to next character in string
-    add edi, 2             ; Advance video memory pointer (2 bytes per character cell)
+    mov [edi], ax               ; each cell is char + attribute
 
-    jmp print_string_pm_loop
+    inc ebx
+    add edi, 2
+    jmp .loop
 
-; Save registers and initialize video memory pointer
-pusha
-mov edi, VIDEO_MEMORY
-
-; Restore registers and return
-print_string_pm_done:
+.done:
     popa
     ret
