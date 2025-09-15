@@ -1,24 +1,35 @@
+/* Flat binary at 0x1000 - has to match KERNEL_OFFSET in boot.asm, since the
+ * bootloader just jumps there. No ELF headers, nothing parses them. */
+
 ENTRY(_start)
 OUTPUT_FORMAT(binary)
 
-SECTIONS { 
-    /* Place the code at 1MB (typical for kernel loading) */
-    . = 1M;
+SECTIONS
+{
+    . = 0x1000;
 
+    /* _start first: whatever lands at 0x1000 is the entry point */
     .text : {
-        *(.text)  /* Place all .text sections here (code) */
+        *(.text._start)
+        *(.text)
+        *(.text.*)
     }
 
     .rodata : {
-        *(.rodata)  /* Read-only data */
+        *(.rodata)
+        *(.rodata.*)
     }
 
     .data : {
-        *(.data)  /* Initialized global/static variables */
+        *(.data)
+        *(.data.*)
     }
 
     .bss : {
         *(COMMON)
-        *(.bss)  /* Uninitialized global/static variables */
+        *(.bss)
+        *(.bss.*)
     }
+
+    kernel_end = .;     /* for the physical allocator later */
 }
