@@ -1,35 +1,59 @@
-# --------------------------------------------------
-# Makefile for MaxOS
-# Description: Builds the bootloader, kernel, and floppy image.
-# --------------------------------------------------
+# MaxOS
+#
+# Needs an i686-elf cross toolchain. See build.sh for the prefix I use.
 
-# Default target: build full floppy image
+TARGET  := i686-elf
+CC      := $(TARGET)-gcc
+LD      := $(TARGET)-ld
+ASM     := nasm
+
+# Don't let a host compiler anywhere near this. Host objects link fine and
+# aren't x86 machine code, which is a miserable way to lose an evening.
+ifeq ($(findstring -elf-,$(CC)),)
+$(error CC=$(CC) is not a cross compiler, expected $(TARGET)-gcc)
+endif
+
+# -ffunction-sections so _start lands in .text._start and link.ld can put it
+# first; the bootloader jumps to 0x1000 blind.
+CFLAGS  := -m32 -ffreestanding -nostdlib -fno-pic -ffunction-sections \
+           -fno-stack-protector -Wall -Wextra -O2
+
+SECTORS := 32          # keep in sync with KERNEL_SECTOR_COUNT in boot.asm
+
+.PHONY: all clean qemu help
+.DEFAULT_GOAL := all
+
 all: floppy.img
 
-# Assemble bootloader to binary
-bin/boot.bin: bootloader/boot.asm
-	nasm -f bin bootloader/boot.asm -o bin/boot.bin
+bin build:
+	mkdir -p $@
 
-# Compile kernel C code to object file
-build/kernel.o: kernel/kernel.c
-	gcc -ffreestanding -c kernel/kernel.c -o build/kernel.o
+# boot.asm %includes the rest, so rebuild on any of them
+bin/boot.bin: bootloader/boot.asm $(wildcard bootloader/*.asm) | bin
+	$(ASM) -f bin $< -o $@
 
-# Create kernel binary directly
-bin/kernel.bin: build/kernel.o
-	cp build/kernel.o bin/kernel.bin
+build/kernel.o: kernel/kernel.c | build
+	$(CC) $(CFLAGS) -c $< -o $@
 
-# Create floppy image with bootloader and kernel
+bin/kernel.bin: build/kernel.o kernel/link.ld | bin
+	$(LD) -m elf_i386 -T kernel/link.ld -o $@ $<
+
 floppy.img: bin/boot.bin bin/kernel.bin
-	dd if=/dev/zero of=floppy.img bs=512 count=2880
-	dd if=bin/boot.bin of=floppy.img conv=notrunc bs=512 count=1
-	dd if=bin/kernel.bin of=floppy.img conv=notrunc bs=512 seek=1
+	@test $$(stat -c%s bin/boot.bin) -eq 512 || \
+		{ echo "boot.bin is not 512 bytes"; exit 1; }
+	@test $$(stat -c%s bin/kernel.bin) -le $$((512 * $(SECTORS))) || \
+		{ echo "kernel > $(SECTORS) sectors, bump KERNEL_SECTOR_COUNT"; exit 1; }
+	dd if=/dev/zero of=$@ bs=512 count=2880 status=none
+	dd if=bin/boot.bin   of=$@ conv=notrunc bs=512 count=1 status=none
+	dd if=bin/kernel.bin of=$@ conv=notrunc bs=512 seek=1 status=none
 
-# Run floppy image in QEMU
 qemu: floppy.img
 	qemu-system-i386 -fda floppy.img -boot a
 
-# Remove build artifacts
 clean:
-	rm -rf bin/*
-	rm -rf build/*
-	rm -f floppy.img
+	rm -rf bin build floppy.img
+
+help:
+	@echo "make        build floppy.img"
+	@echo "make qemu   boot it"
+	@echo "make clean"
