@@ -1,0 +1,11 @@
+bin/
+build/
+*.o
+*.bin
+*.img
+
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
