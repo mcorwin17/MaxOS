@@ -1,0 +1,675 @@
+<title>Rebuilding MaxOS</title>
+<style>
+  /* ---- Light palette (complete, on bare :root) ---------------------------
+     Hues derived from the VGA 16-color table kernel.c already defines:
+     cyan accent, VGA red / brown / green used semantically. Neutrals carry a
+     blue bias so they read as chosen rather than inherited mid-grey.        */
+  :root {
+    --paper:      #EFF2F6;
+    --surface:    #FFFFFF;
+    --surface-2:  #E4E9F0;
+    --ink:        #0F161F;
+    --ink-soft:   #4E5C6C;
+    --ink-faint:  #7A8796;
+    --rule:       #D2DAE4;
+    --rule-soft:  #E2E8F0;
+    --accent:     #0A6A78;
+    --accent-ink: #06525D;
+    --fatal:      #A32219;
+    --warn:       #86560A;
+    --ok:         #1C6738;
+    --code-bg:    #E7ECF3;
+
+    --sans: ui-sans-serif, system-ui, "Segoe UI Variable Text", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --serif: Charter, "Bitstream Charter", "Iowan Old Style", Cambria, Georgia, "Times New Roman", serif;
+    --mono: ui-monospace, "Cascadia Mono", "SF Mono", Consolas, "Liberation Mono", Menlo, monospace;
+
+    --measure: 68ch;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper:      #0C1118;
+      --surface:    #141B24;
+      --surface-2:  #1B2430;
+      --ink:        #E4EBF3;
+      --ink-soft:   #9DAAB9;
+      --ink-faint:  #6F7D8D;
+      --rule:       #26313F;
+      --rule-soft:  #1D2731;
+      --accent:     #45CEDC;
+      --accent-ink: #7FE0EA;
+      --fatal:      #F0665B;
+      --warn:       #E0A63A;
+      --ok:         #5BC983;
+      --code-bg:    #101821;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --paper:      #0C1118;
+    --surface:    #141B24;
+    --surface-2:  #1B2430;
+    --ink:        #E4EBF3;
+    --ink-soft:   #9DAAB9;
+    --ink-faint:  #6F7D8D;
+    --rule:       #26313F;
+    --rule-soft:  #1D2731;
+    --accent:     #45CEDC;
+    --accent-ink: #7FE0EA;
+    --fatal:      #F0665B;
+    --warn:       #E0A63A;
+    --ok:         #5BC983;
+    --code-bg:    #101821;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--serif);
+    font-size: 17px;
+    line-height: 1.62;
+    margin: 0;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .shell {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0;
+    max-width: 1180px;
+    margin: 0 auto;
+    padding: 0 24px 120px;
+  }
+
+  @media (min-width: 1000px) {
+    .shell {
+      grid-template-columns: 216px minmax(0, 1fr);
+      gap: 56px;
+      padding-right: 40px;
+    }
+  }
+
+  /* ---- Masthead ------------------------------------------------------- */
+  .masthead {
+    grid-column: 1 / -1;
+    border-bottom: 2px solid var(--ink);
+    padding: 56px 0 22px;
+    margin-bottom: 44px;
+  }
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--accent-ink);
+    margin: 0 0 14px;
+  }
+  h1 {
+    font-family: var(--sans);
+    font-size: clamp(38px, 6vw, 62px);
+    line-height: 1.02;
+    letter-spacing: -0.028em;
+    font-weight: 700;
+    margin: 0 0 18px;
+    text-wrap: balance;
+  }
+  .standfirst {
+    font-size: 19px;
+    color: var(--ink-soft);
+    max-width: var(--measure);
+    margin: 0;
+  }
+  .standfirst strong { color: var(--ink); font-weight: 600; }
+
+  /* ---- Nav rail -------------------------------------------------------- */
+  .rail { display: none; }
+  @media (min-width: 1000px) {
+    .rail {
+      display: block;
+      align-self: start;
+      position: sticky;
+      top: 28px;
+      font-family: var(--sans);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+    .rail h2 {
+      font-family: var(--mono);
+      font-size: 10.5px;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--ink-faint);
+      margin: 0 0 12px;
+      font-weight: 500;
+    }
+    .rail ol { list-style: none; margin: 0 0 26px; padding: 0; display: flex; flex-direction: column; gap: 7px; }
+    .rail a {
+      color: var(--ink-soft);
+      text-decoration: none;
+      display: block;
+      border-left: 2px solid var(--rule);
+      padding: 1px 0 1px 11px;
+    }
+    .rail a:hover, .rail a:focus-visible { color: var(--accent-ink); border-left-color: var(--accent); }
+    .rail .n { font-family: var(--mono); font-size: 11px; color: var(--ink-faint); margin-right: 7px; }
+  }
+
+  main { min-width: 0; }
+
+  /* ---- Sections -------------------------------------------------------- */
+  section { margin-bottom: 68px; scroll-margin-top: 24px; }
+
+  h2 {
+    font-family: var(--sans);
+    font-size: 15px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    font-weight: 650;
+    color: var(--accent-ink);
+    margin: 0 0 8px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--rule);
+  }
+  h3 {
+    font-family: var(--sans);
+    font-size: 27px;
+    line-height: 1.2;
+    letter-spacing: -0.017em;
+    font-weight: 680;
+    margin: 26px 0 12px;
+    text-wrap: balance;
+  }
+  h4 {
+    font-family: var(--sans);
+    font-size: 15px;
+    font-weight: 660;
+    margin: 22px 0 6px;
+    letter-spacing: -0.005em;
+  }
+  p { margin: 0 0 15px; max-width: var(--measure); }
+  ul, ol.body-list { max-width: var(--measure); padding-left: 20px; margin: 0 0 15px; }
+  li { margin-bottom: 7px; }
+
+  code {
+    font-family: var(--mono);
+    font-size: 0.855em;
+    background: var(--code-bg);
+    padding: 1.5px 5px;
+    border-radius: 3px;
+    color: var(--ink);
+    word-break: break-word;
+  }
+  a { color: var(--accent-ink); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+  a:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
+
+  /* ---- Verdict banner -------------------------------------------------- */
+  .verdict {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-left: 4px solid var(--fatal);
+    padding: 22px 26px;
+    margin: 0 0 26px;
+    max-width: var(--measure);
+  }
+  .verdict p { margin: 0 0 12px; }
+  .verdict p:last-child { margin-bottom: 0; }
+  .verdict .lede {
+    font-family: var(--sans);
+    font-size: 20px;
+    font-weight: 660;
+    line-height: 1.3;
+    letter-spacing: -0.014em;
+  }
+
+  /* ---- Hex evidence ---------------------------------------------------- */
+  .evidence {
+    background: var(--code-bg);
+    border: 1px solid var(--rule);
+    padding: 16px 18px;
+    margin: 0 0 22px;
+    overflow-x: auto;
+    font-family: var(--mono);
+    font-size: 12.5px;
+    line-height: 1.75;
+    max-width: var(--measure);
+  }
+  .evidence .lbl { color: var(--ink-faint); }
+  .evidence .hi { color: var(--fatal); font-weight: 600; }
+  .evidence .cm { color: var(--ink-soft); }
+
+  /* ---- Audit table ----------------------------------------------------- */
+  .tablewrap { overflow-x: auto; margin: 0 0 20px; border: 1px solid var(--rule); background: var(--surface); }
+  table { border-collapse: collapse; width: 100%; font-family: var(--sans); font-size: 13.5px; min-width: 620px; }
+  thead th {
+    text-align: left;
+    font-size: 10.5px;
+    letter-spacing: 0.11em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    font-weight: 600;
+    padding: 11px 14px;
+    border-bottom: 1px solid var(--rule);
+    white-space: nowrap;
+  }
+  tbody td { padding: 11px 14px; border-bottom: 1px solid var(--rule-soft); vertical-align: top; line-height: 1.45; }
+  tbody tr:last-child td { border-bottom: none; }
+  td.sev { white-space: nowrap; border-left: 3px solid transparent; font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.07em; text-transform: uppercase; }
+  tr.f td.sev { border-left-color: var(--fatal); color: var(--fatal); }
+  tr.b td.sev { border-left-color: var(--warn);  color: var(--warn); }
+  tr.l td.sev { border-left-color: var(--ink-faint); color: var(--ink-soft); }
+  td.loc { font-family: var(--mono); font-size: 11.5px; color: var(--ink-soft); white-space: nowrap; }
+
+  /* ---- Phase cards ----------------------------------------------------- */
+  .phase {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    padding: 24px 26px 20px;
+    margin-bottom: 18px;
+  }
+  .phase-head { display: flex; align-items: baseline; gap: 13px; margin-bottom: 4px; }
+  .phase-n {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--accent-ink);
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    flex: none;
+  }
+  .phase h3 { margin: 0; font-size: 23px; }
+  .phase > p:first-of-type { margin-top: 12px; }
+  .phase p, .phase ul { max-width: 62ch; }
+
+  .done {
+    margin-top: 16px;
+    padding-top: 13px;
+    border-top: 1px solid var(--rule-soft);
+    font-family: var(--sans);
+    font-size: 13.5px;
+    color: var(--ink-soft);
+    max-width: 62ch;
+  }
+  .done b {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--ok);
+    display: block;
+    margin-bottom: 4px;
+    font-weight: 600;
+  }
+
+  .trap {
+    margin-top: 14px;
+    background: var(--surface-2);
+    border-left: 3px solid var(--warn);
+    padding: 13px 16px;
+    font-size: 15px;
+    max-width: 62ch;
+  }
+  .trap b {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--warn);
+    display: block;
+    margin-bottom: 4px;
+    font-weight: 600;
+  }
+  .trap p { margin: 0; max-width: none; }
+
+  /* ---- Delta list ------------------------------------------------------ */
+  .delta { max-width: var(--measure); margin: 0 0 20px; }
+  .delta > div {
+    border-top: 1px solid var(--rule);
+    padding: 15px 0 3px;
+  }
+  .delta > div:last-child { border-bottom: 1px solid var(--rule); }
+  .delta h4 { margin: 0 0 5px; }
+  .delta p { margin: 0 0 11px; font-size: 16px; color: var(--ink-soft); }
+
+  footer {
+    grid-column: 1 / -1;
+    border-top: 1px solid var(--rule);
+    padding-top: 20px;
+    font-family: var(--sans);
+    font-size: 13px;
+    color: var(--ink-faint);
+    max-width: var(--measure);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { animation: none !important; transition: none !important; }
+  }
+</style>
+
+<div class="shell">
+
+  <header class="masthead">
+    <p class="eyebrow">MaxOS · notes to self</p>
+    <h1>Rebuilding MaxOS</h1>
+    <p class="standfirst">Where this repo actually is, and the order I'm building things in from here. I checked every claim below against the bytes on disk rather than trusting what the code says about itself — <strong>starting with the fact that this has never booted.</strong></p>
+  </header>
+
+  <nav class="rail" aria-label="Contents">
+    <h2>Ground truth</h2>
+    <ol>
+      <li><a href="#verdict">The verdict</a></li>
+      <li><a href="#audit">Defect table</a></li>
+      <li><a href="#delta">Where the guide is wrong</a></li>
+      <li><a href="#decisions">Decisions to make once</a></li>
+    </ol>
+    <h2>Phases</h2>
+    <ol>
+      <li><a href="#p0"><span class="n">00</span>Toolchain</a></li>
+      <li><a href="#p1"><span class="n">01</span>First real boot</a></li>
+      <li><a href="#p2"><span class="n">02</span>Debug infrastructure</a></li>
+      <li><a href="#p3"><span class="n">03</span>Hygiene &amp; honesty</a></li>
+      <li><a href="#p4"><span class="n">04</span>Interrupts</a></li>
+      <li><a href="#p5"><span class="n">05</span>Timers &amp; APIC</a></li>
+      <li><a href="#p6"><span class="n">06</span>Keyboard &amp; shell</a></li>
+      <li><a href="#p7"><span class="n">07</span>Physical memory</a></li>
+      <li><a href="#p8"><span class="n">08</span>Virtual memory</a></li>
+      <li><a href="#p9"><span class="n">09</span>Heap</a></li>
+      <li><a href="#p10"><span class="n">10</span>Demand paging</a></li>
+      <li><a href="#p11"><span class="n">11</span>Threads</a></li>
+      <li><a href="#p12"><span class="n">12</span>Ring 3</a></li>
+      <li><a href="#p13"><span class="n">13</span>Processes</a></li>
+      <li><a href="#p14"><span class="n">14</span>Signals &amp; TTY</a></li>
+      <li><a href="#p15"><span class="n">15</span>Storage</a></li>
+      <li><a href="#p16"><span class="n">16</span>Userspace</a></li>
+      <li><a href="#p17"><span class="n">17</span>Real hardware</a></li>
+      <li><a href="#p18"><span class="n">18</span>One depth track</a></li>
+    </ol>
+  </nav>
+
+  <main>
+
+    <section id="verdict">
+      <h2>The verdict</h2>
+
+      <div class="verdict">
+        <p class="lede">This has never executed a single line of its own kernel.</p>
+        <p>Not "boots but needs a keyboard driver." The BIOS loads sector 1, jumps to <code>0x7C00</code>, and the first bytes it runs are the GDT descriptor interpreted as machine code. It never reaches <code>_start</code>.</p>
+        <p>That's baked into the committed <code>floppy.img</code>, so every timing claim and "functional operating system" line in the old README describes something that never happened.</p>
+      </div>
+
+      <p>Two ways to see it, straight out of the committed binaries:</p>
+
+      <div class="evidence"><span class="lbl">bin/boot.bin  [0..7]</span>  <span class="hi">18 00 06 7C</span> 00 00 00 00
+                <span class="cm">└──┴──┴─────  dw gdt_end-gdt_start  = 0x0018 (24)</span>
+                <span class="cm">          └─  dd gdt_start          = 0x00007C06</span>
+
+<span class="lbl">bin/kernel.bin[0..7]</span>  <span class="hi">CF FA ED FE</span> 0C 00 00 01
+                <span class="cm">└──┴──┴──┴──  MH_MAGIC_64 (Mach-O, little endian)</span>
+                <span class="cm">             └──┴──┴──┴─  cputype 0x0100000C = ARM64</span></div>
+
+      <p>The first is the section ordering. <code>boot.asm</code> had four <code>%include</code> directives above its own <code>section .text</code>, and with <code>-f bin</code> everything they emit lands in <code>.text</code> <em>first</em> — so the GDT descriptor sits at offset 0 and <code>_start</code> is buried a few hundred bytes in. The signature at <code>0x1FE</code> is still <code>55 AA</code>, so the BIOS boots it into garbage perfectly happily.</p>
+
+      <p>The second one is funnier. The file being <code>dd</code>'d in as the kernel is an <strong>Apple Silicon Mach-O object</strong> — host <code>gcc</code> on the Mac, then copied rather than linked by <code>cp build/kernel.o bin/kernel.bin</code>. Which means <code>link.ld</code> had never run once, and it pointed at <code>. = 1M</code> while the bootloader loads to <code>0x1000</code> anyway.</p>
+
+      <p>Honestly this is good news. I'd been extending something I assumed was a working base, and it wasn't. So: make one thing true and verifiable first, then don't let it go untrue again.</p>
+    </section>
+
+    <section id="audit">
+      <h2>Defect table</h2>
+      <p>All checked against the tree at <code>7f8239c</code>. Severity is about consequence, not how long it takes to fix.</p>
+
+      <div class="tablewrap">
+        <table>
+          <thead>
+            <tr><th>Sev</th><th>Location</th><th>Defect</th></tr>
+          </thead>
+          <tbody>
+            <tr class="f"><td class="sev">Fatal</td><td class="loc">boot.asm:40–44</td><td><code>%include</code>s precede <code>section .text</code>, so the emitted entry point is the GDT descriptor, not code. Proven by <code>boot.bin</code> bytes above.</td></tr>
+            <tr class="f"><td class="sev">Fatal</td><td class="loc">switchpm.asm:22</td><td><code>[bits 32]</code> is never reverted. Every byte assembled after it — <code>ppstring</code>, <code>pstring</code>, and all of <code>_start</code> — is encoded as 32-bit while the CPU is still in 16-bit real mode.</td></tr>
+            <tr class="f"><td class="sev">Fatal</td><td class="loc">Makefile:19</td><td><code>cp build/kernel.o bin/kernel.bin</code> ships an ARM64 Mach-O object as x86 machine code. The linker script is never run.</td></tr>
+            <tr class="b"><td class="sev">Build</td><td class="loc">boot.asm:129</td><td>Calls <code>switch_to_protected_mode</code>; <code>switchpm.asm:6</code> defines <code>switch_to_pm</code>. Undefined symbol.</td></tr>
+            <tr class="b"><td class="sev">Build</td><td class="loc">switchpm.asm:38</td><td><code>call BEGIN_PM</code> — never defined anywhere in the tree.</td></tr>
+            <tr class="b"><td class="sev">Build</td><td class="loc">boot.asm:197</td><td><code>print_string</code> defined here <em>and</em> at <code>pstring.asm:7</code>. Duplicate symbol.</td></tr>
+            <tr class="b"><td class="sev">Logic</td><td class="loc">ppstring.asm:28</td><td><code>pusha</code> and <code>mov edi, VIDEO_MEMORY</code> sit after an unconditional <code>jmp</code> — unreachable. So <code>EDI</code> is never initialised and the <code>popa</code> at line 33 pops registers that were never pushed, corrupting the stack.</td></tr>
+            <tr class="b"><td class="sev">Logic</td><td class="loc">ppstring.asm:3</td><td>The <code>print_string_pm</code> entry point named in the file's own header does not exist. Only the <code>_loop</code> and <code>_done</code> labels do.</td></tr>
+            <tr class="b"><td class="sev">Logic</td><td class="loc">boot.asm:29</td><td><code>KERNEL_SECTOR_COUNT equ 0x02</code> loads 1 KB. The kernel object is 5,152 bytes — it would be truncated to a fifth even if it were valid code.</td></tr>
+            <tr class="b"><td class="sev">Logic</td><td class="loc">switchpm.asm:38</td><td>Nothing ever jumps to the kernel at <code>0x1000</code>. The protected-mode path dead-ends in the undefined <code>BEGIN_PM</code> call.</td></tr>
+            <tr class="b"><td class="sev">Logic</td><td class="loc">link.ld:6</td><td><code>. = 1M</code> contradicts the bootloader's <code>0x1000</code> load address. Real-mode <code>int 13h</code> cannot write above 1 MB without unreal mode regardless.</td></tr>
+            <tr class="l"><td class="sev">Robust</td><td class="loc">boot.asm:138</td><td>No <code>int 13h</code> reset-and-retry loop. Floppy reads fail spuriously on real hardware; one attempt is not enough. <code>DL</code> is also never explicitly preserved.</td></tr>
+            <tr class="l"><td class="sev">Dead</td><td class="loc">load_kernel.asm</td><td><code>[extern main]</code> is incompatible with <code>-f bin</code>, <code>main</code> does not exist in <code>kernel.c</code>, and no file includes it. Same for <code>println.asm</code>.</td></tr>
+            <tr class="l"><td class="sev">Docs</td><td class="loc">README.md:188</td><td>"Boot Time: &lt;1 second from BIOS to kernel execution" and "A functional x86 operating system" describe behaviour that has never occurred.</td></tr>
+            <tr class="l"><td class="sev">Docs</td><td class="loc">kernel.c:428</td><td>Prints <code>Available Commands: help, info, status, clear</code> and a <code>&gt;</code> prompt. There is no keyboard driver and no IDT. The screen is a promise the kernel cannot keep.</td></tr>
+            <tr class="l"><td class="sev">Env</td><td class="loc">this machine</td><td><code>nasm</code>, <code>gcc</code>, <code>ld</code>, <code>make</code>, <code>qemu</code> and <code>docker</code> are all absent. Nothing in this repository can be built here today.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="delta">
+      <h2>Where the guide is wrong</h2>
+      <p>The week-by-week guide I've been following is a decent skeleton and it's right more often than not. But there are a few places where following it literally costs weeks, and those are worth writing down before I start.</p>
+
+      <div class="delta">
+        <div>
+          <h4>It has me build the interrupt layer twice</h4>
+          <p>It does a 32-bit IDT in week 4, then a 32-bit PIC, timer, keyboard and shell in weeks 5–7, then long mode in week 11 — and then casually says to "rebuild the GDT and IDT with proper 64-bit descriptors" in week 12. That's not a tweak. Gate descriptors go 8 → 16 bytes, <code>pusha</code> doesn't exist in 64-bit mode, the frame layout changes, every stub gets rewritten. Go to long mode <em>before</em> writing a single stub and it only happens once.</p>
+        </div>
+        <div>
+          <h4>It treats a working bootloader as the fallback</h4>
+          <p>Weeks 9–11 are hand-writing a two-stage real-mode loader, which is the worst debugging environment in the whole project — no GDB, no output — and Limine only shows up afterwards as an escape hatch. Backwards. Boot with Limine from day one, get long mode and a memory map and a framebuffer for free, and write my own loader later as its own project, when there's a working kernel to compare against.</p>
+        </div>
+        <div>
+          <h4>It barely mentions IST stacks</h4>
+          <p>Kernel stack overflow → page fault; handling that fault on the same dead stack → double fault; handling <em>that</em> on the same stack → triple fault and a silent reset. That's exactly what the Interrupt Stack Table is for, and <code>#DF</code>, <code>NMI</code> and <code>#MC</code> each want their own. The guide mentions IST once, in passing, in week 12.</p>
+        </div>
+        <div>
+          <h4>Four subsystems are just missing</h4>
+          <p>No signals, no TTY or line discipline, no demand paging or <code>mmap</code>, no page cache. Without the first two Ctrl-C doesn't work and neither does job control, so the "userspace shell" in week 47 isn't really a shell. Without the third every <code>fork</code> copies eagerly and there's no file-backed mapping. Without the fourth every <code>read()</code> hits the disk.</p>
+        </div>
+        <div>
+          <h4>Its panic handler can't say where it is</h4>
+          <p>It dumps registers and stack words — bare addresses, no names. If I build a symbol table and a frame-pointer unwinder in the same week as <code>panic()</code>, then every fault after that prints a real backtrace instead of eight hex values I have to resolve by hand.</p>
+        </div>
+        <div>
+          <h4>The environment advice is for a Mac</h4>
+          <p>"On a Mac that's <code>brew install</code>…" — I'm on Windows with nothing installed. That's not a footnote, it's the blocking first step. And the ARM64 Mach-O sitting in the disk image is exactly what happens when the toolchain question gets handled casually.</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="decisions">
+      <h2>Decisions to make once</h2>
+      <p>Four choices that are cheap now and expensive in six months. Make them deliberately, write down why, and stop revisiting them.</p>
+
+      <h4>64-bit long mode, from the first boot</h4>
+      <p>Not 32-bit protected mode with a migration later. The migration is the single biggest source of rework in the guide, and every modern reference I read assumes x86-64 anyway.</p>
+
+      <h4>Limine first, your own bootloader as a later exercise</h4>
+      <p>Limine hands you long mode, a higher-half mapping, an ACPI pointer, a memory map and a framebuffer. Keeping your own loader on the critical path means a bootloader bug can block kernel work indefinitely — which is precisely the state this repository is in.</p>
+
+      <h4>Monolithic, with driver interfaces kept honest</h4>
+      <p>A microkernel is a fine research project and a bad first kernel; you will spend the year on IPC performance instead of on operating systems. Stay monolithic, but define real vtable-shaped interfaces at the block-device and filesystem layers so the abstraction is tested by having two implementations.</p>
+
+      <h4>Serial is the primary output device</h4>
+      <p>VGA text is for demos. Everything you assert in CI, every panic, every trace goes out COM1 where the host can read it. A kernel whose only output channel is inside the VM is a kernel you cannot test.</p>
+    </section>
+
+    <section id="phases">
+      <h2>The plan</h2>
+      <p>Phases, not weeks. The guide's week numbers implied a precision they never had. The <em>order</em> is real, though: each phase depends on the one before it, and the numbering encodes that dependency chain rather than a calendar. Every phase ends with a check you can run, because "it seems to work" is what produced a disk image containing an ARM64 object file.</p>
+
+      <div class="phase" id="p0">
+        <div class="phase-head"><span class="phase-n">00</span><h3>A toolchain that cannot lie to you</h3></div>
+        <p>Nothing is installed on this machine. Fix that first, and fix it in a way that makes the Mach-O incident impossible to repeat.</p>
+        <p>Install WSL2 with Ubuntu and do all kernel work inside it — you get a real POSIX environment, and <code>make</code>, <code>dd</code> and the ELF toolchain behave as every OS-dev reference assumes. Inside WSL, build or install an <code>x86_64-elf</code> cross toolchain plus <code>nasm</code>, <code>qemu-system-x86_64</code> and <code>xorriso</code>. Then put the whole thing in a Dockerfile so CI and your laptop compile with identical binaries.</p>
+        <p>Add a hard guard to the Makefile: if <code>$(CC)</code> does not begin with a target triple, abort with an error. The rule is that the host compiler must never be reachable from a kernel build rule.</p>
+        <div class="trap"><b>The trap</b><p>Do not skip the cross compiler because "gcc works." Your host compiler targets your host, and the only reason that failure was survivable here is that the resulting bytes never executed. On a kernel that does boot, host-targeted code fails as inexplicable corruption.</p></div>
+        <div class="done"><b>Done when</b> <code>x86_64-elf-gcc --version</code> and <code>qemu-system-x86_64 --version</code> both answer inside WSL, and a deliberately-wrong <code>make CC=gcc</code> fails loudly rather than producing output.</div>
+      </div>
+
+      <div class="phase" id="p1">
+        <div class="phase-head"><span class="phase-n">01</span><h3>One thing that is actually true</h3></div>
+        <p>The goal is a 64-bit kernel that boots in QEMU and prints one line over serial. Nothing else. This is the first time this project will have run its own code.</p>
+        <p>Write a Limine-booted kernel entry point, a linker script placing it in the higher half at <code>0xFFFFFFFF80000000</code>, and a COM1 driver. Serial is about forty lines: port <code>0x3F8</code>, set the DLAB bit in the line control register at <code>0x3FB</code>, divisor 3 for 38400 baud, FIFO control <code>0xC7</code> at <code>0x3FA</code>, then poll bit 5 of <code>0x3FD</code> before each byte.</p>
+        <p>Compiler flags are not optional and getting them wrong costs weeks later: <code>-ffreestanding -mcmodel=kernel -mno-red-zone -mno-mmx -mno-sse -mno-sse2</code>. The red zone is the one that will hurt — the SysV AMD64 ABI lets leaf functions use 128 bytes below <code>RSP</code> without adjusting it, and your interrupt handlers will scribble on exactly that region. It does not fail immediately. It fails weeks later as random corruption under interrupt load, and it is the nastiest bug in this entire document to track down.</p>
+        <div class="done"><b>Done when</b> <code>make clean &amp;&amp; make &amp;&amp; make run</code> on a fresh clone prints a line to your terminal via <code>-serial stdio</code>. Not the committed image — a freshly built one.</div>
+      </div>
+
+      <div class="phase" id="p2">
+        <div class="phase-head"><span class="phase-n">02</span><h3>Debug infrastructure, before features</h3></div>
+        <p>Every hour here buys back ten later. Build all of it now, while the kernel is small enough that you can trust it.</p>
+        <ul>
+          <li><code>kprintf</code> over serial, with <code>%p</code>, <code>%x</code> and zero-padding.</li>
+          <li><code>panic(fmt, ...)</code>: message, every register, <code>CR2</code>/<code>CR3</code>, then <code>cli; hlt</code> in a loop. Plus a <code>KASSERT</code> macro that calls it.</li>
+          <li><strong>A symbol table and a stack unwinder.</strong> Emit a sorted name/address table into the image at build time, walk saved <code>RBP</code> frames, and print <code>function+0x1c</code> instead of a bare address. Build with <code>-fno-omit-frame-pointer</code> so the walk works.</li>
+          <li>GDB: <code>qemu-system-x86_64 -s -S</code> opens a stub on 1234. Keep the ELF with symbols alongside the flat image. Learn <code>hbreak</code> — hardware breakpoints are the only kind that work before paging is configured.</li>
+          <li><code>-d int,cpu_reset,guest_errors</code> for the resets you cannot otherwise explain.</li>
+          <li>An in-kernel test harness plus <code>isa-debug-exit</code>: <code>-device isa-debug-exit,iobase=0xf4,iosize=0x04</code>, then a byte written to port <code>0xf4</code> exits QEMU with status <code>(value &lt;&lt; 1) | 1</code>. Wrap it as <code>test_pass()</code> / <code>test_fail()</code>.</li>
+          <li>GitHub Actions running that harness in the Phase 00 container, so CI fails on a broken kernel and not merely a broken build.</li>
+        </ul>
+        <div class="done"><b>Done when</b> a deliberate null dereference prints a named backtrace over serial, and a deliberately failing test turns the CI run red.</div>
+      </div>
+
+      <div class="phase" id="p3">
+        <div class="phase-head"><span class="phase-n">03</span><h3>Hygiene, and a README that is true</h3></div>
+        <p>Do this while the repository is still small. Delete <code>bin/</code>, <code>build/</code>, <code>floppy.img</code> and the stray zero-byte <code>Merge</code> file from git and add them to the currently-empty <code>.gitignore</code>. Delete <code>CMakeLists.txt</code> — all 235 lines of it call <code>find_package(Threads)</code> for a freestanding kernel and have never built anything. Delete <code>load_kernel.asm</code> and <code>println.asm</code>, which no file includes.</p>
+        <p>Cut <code>CREDITS.md</code> down to what you actually used. Citing <em>Understanding the Linux Kernel</em> for a function that fills 2,000 words of video memory is the kind of thing that makes a reader stop trusting everything else in the file.</p>
+        <p>Rewrite the README to describe only what runs. Two paragraphs, a recorded boot, a table of what works and what is next, and build instructions someone can follow. Drop "v2.0" and "Educational Operating System" — it is version 0.1 of a kernel, and the gap between those two claims is the entire reason this rebuild is happening. Delete the fake command prompt from <code>kernel.c</code> at the same time; it comes back for real in Phase 06.</p>
+        <div class="done"><b>Done when</b> a fresh clone contains no build artefacts, and every capability claimed in the README can be demonstrated by a command in the README.</div>
+      </div>
+
+      <div class="phase" id="p4">
+        <div class="phase-head"><span class="phase-n">04</span><h3>Interrupts — written once, in 64-bit</h3></div>
+        <p>Right now any fault triple-faults and QEMU silently resets, which looks exactly like a hang. This phase is what makes the kernel able to report its own failures.</p>
+        <p>Build a 256-entry IDT with 16-byte gate descriptors. Write stubs for vectors 0–31. The irritating part: vectors 8, 10, 11, 12, 13, 14, 17 and 21 push an error code and the rest do not, so the rest need a stub that pushes a dummy zero — otherwise your frame layout is inconsistent and every register you read is off by eight bytes.</p>
+        <p>There is no <code>pusha</code> in long mode; push the fifteen general-purpose registers explicitly. Keep <code>RSP</code> 16-byte aligned at the C handler call or any future SSE code will fault on aligned loads. Have the handler decode the exception name, the error code bit by bit, and <code>CR2</code> for page faults.</p>
+        <p>Set up a TSS with IST entries now, and point <code>#DF</code>, <code>NMI</code> and <code>#MC</code> at their own stacks. This is cheap today and it is what stops a kernel stack overflow from becoming an unexplainable reset.</p>
+        <div class="done"><b>Done when</b> a null dereference, a divide by zero and an invalid opcode each produce three <em>different</em> clean dumps with backtraces, instead of three identical silent reboots — and a deliberate infinite recursion prints a double fault rather than resetting.</div>
+      </div>
+
+      <div class="phase" id="p5">
+        <div class="phase-head"><span class="phase-n">05</span><h3>Interrupt controllers and a clock</h3></div>
+        <p>Remap the 8259 PIC first — it powers up mapping IRQ0 onto vector 8, which is also the double fault vector, so a timer tick is indistinguishable from a catastrophic CPU error. ICW1 <code>0x11</code> to <code>0x20</code>/<code>0xA0</code>, offsets <code>0x20</code>/<code>0x28</code>, ICW3 <code>0x04</code>/<code>0x02</code> for the cascade, ICW4 <code>0x01</code> for 8086 mode.</p>
+        <p>Then mask it off entirely and move to the APIC. Parse the ACPI RSDP that Limine hands you, walk the MADT for the LAPIC and IOAPIC addresses, and route IRQs through the IOAPIC with the interrupt source overrides applied. The legacy PIC cannot do SMP, so if you intend to get there, every week spent building on it is a week you will unwind.</p>
+        <p>Get a tick from the LAPIC timer, calibrated against the PIT. Keep a global counter, write <code>sleep_ms()</code>, and delete <code>delay_milliseconds()</code> with its <code>for (i = 0; i &lt; ms * 10000; i++) nop</code> loop — it produces a different delay on every machine and every optimisation level.</p>
+        <div class="trap"><b>The trap</b><p>Two EOI bugs eat afternoons. On the PIC, an IRQ from the slave (8–15) needs EOI sent to <em>both</em> controllers; forget the slave and that IRQ fires exactly once, forever. And the PIC raises spurious interrupts on lines 7 and 15 — check the ISR register and return without EOI when it is spurious.</p></div>
+        <div class="done"><b>Done when</b> <code>get_system_uptime()</code> returns a real monotonically increasing value, and a test asserts the counter advances across a known wall-clock interval.</div>
+      </div>
+
+      <div class="phase" id="p6">
+        <div class="phase-head"><span class="phase-n">06</span><h3>Keyboard, and a shell that is no longer a lie</h3></div>
+        <p>PS/2 controller: status port <code>0x64</code>, data port <code>0x60</code>, IRQ1. Read the scancode, translate it through a set-1 table, handle the <code>0xE0</code> prefix for extended keys, track shift/caps/ctrl as state, and push characters into a ring buffer that a blocking <code>getchar()</code> drains.</p>
+        <p>The discipline that matters: the interrupt handler reads a byte, pushes it, sends EOI, returns. It does not block, it does not allocate, and it does not take a lock that any non-interrupt code holds. All parsing happens in the consumer. Establish this now, because once there is a scheduler, an IRQ handler touching a held lock deadlocks the machine in a way that is genuinely hard to reason about. Dropping keystrokes when the buffer is full is fine; corrupting the buffer is not.</p>
+        <p>Then the shell: a read-eval-print loop over the keyboard buffer, backspace editing, and a command table mapping strings to function pointers. Implement <code>help</code>, <code>clear</code>, <code>uptime</code>, <code>mem</code> (which prints nothing useful yet — that is fine), <code>reboot</code> via the keyboard controller pulse, <code>panic</code> to demonstrate the fault handler on demand, and <code>echo</code>.</p>
+        <div class="done"><b>Done when</b> the four commands the kernel has been advertising since 2025 actually run. Record it — this is the first genuinely demonstrable milestone.</div>
+      </div>
+
+      <div class="phase" id="p7">
+        <div class="phase-head"><span class="phase-n">07</span><h3>Physical memory</h3></div>
+        <p>Take Limine's memory map and build a bitmap allocator over it: one bit per 4 KB frame, <code>pmm_alloc_frame()</code> returning a physical address and <code>pmm_free_frame()</code> giving it back. Mark as reserved everything below 1 MB, the kernel's own extent (take the bounds from linker symbols), the bitmap itself, and every region not marked usable.</p>
+        <p>Add a free-frame counter so <code>mem</code> prints real numbers. A buddy allocator is better and you do not need it yet.</p>
+        <div class="done"><b>Done when</b> a test allocates every frame, asserts none repeat, frees them all, and asserts the count returns exactly to baseline. That last assertion catches an entire category of bug for the rest of the project.</div>
+      </div>
+
+      <div class="phase" id="p8">
+        <div class="phase-head"><span class="phase-n">08</span><h3>Virtual memory</h3></div>
+        <p>Limine already put me in the higher half, which deletes the guide's most painful week. What remains is owning the tables yourself: a four-level walk through PML4, PDPT, PD and PT, with <code>vmm_map(pml4, virt, phys, flags)</code> allocating intermediate tables on demand, plus <code>vmm_unmap</code> and <code>vmm_get_physical</code>. Flush single entries with <code>invlpg</code> rather than reloading <code>CR3</code>, which flushes everything.</p>
+        <p>Build your own PML4, switch to it, and drop the bootloader's identity mapping once you have jumped. Kernel mappings live in the upper half of every address space and are shared; user mappings live in the lower half and are per-process.</p>
+        <p>Then make the page fault handler genuinely good, because you will read its output several hundred times. <code>CR2</code> holds the faulting address; the error code tells the story — bit 0 means the page was present so it is a protection violation rather than a missing mapping, bit 1 means write, bit 2 means user mode, bit 4 means instruction fetch. Decode every bit into English.</p>
+        <div class="done"><b>Done when</b> you can map a page, write to it, unmap it, and see a correctly-decoded fault — and a thousand map/unmap cycles leak zero frames.</div>
+      </div>
+
+      <div class="phase" id="p9">
+        <div class="phase-head"><span class="phase-n">09</span><h3>Kernel heap</h3></div>
+        <p><code>kmalloc</code> and <code>kfree</code> over a free list with block headers, first-fit, coalescing adjacent free blocks. Put magic-number canaries before and after every allocation and check them on free: a heap corruption you catch immediately costs an hour, and one you catch three weeks later costs a weekend.</p>
+        <p>Track total allocated bytes and live allocation count so tests can assert a subsystem does not leak. Slab caches for fixed-size objects come later, when you have thread structs to allocate.</p>
+        <div class="done"><b>Done when</b> an adversarial allocate/free/fragment test passes, coalescing is verified by asserting a large allocation succeeds after freeing neighbours, and a deliberate overflow trips a canary.</div>
+      </div>
+
+      <div class="phase" id="p10">
+        <div class="phase-head"><span class="phase-n">10</span><h3>Demand paging and address spaces</h3></div>
+        <p>Missing from the guide entirely, and everything after it is shaped by whether I have it. Introduce a region abstraction — a VMA describing a range, its permissions, and its backing — and make the page fault handler consult it: a fault inside a mapped region allocates and maps a frame on the spot; a fault outside one is a real fault.</p>
+        <p>This buys anonymous memory that costs nothing until touched, a growable heap and stack for future processes, file-backed mappings once there is a filesystem, and — critically — it is the mechanism copy-on-write will be built on in Phase 13. Retrofitting it after <code>fork</code> exists means rewriting <code>fork</code>.</p>
+        <div class="done"><b>Done when</b> a 16 MB anonymous region can be reserved while free frame count barely moves, and frames appear only as pages are touched.</div>
+      </div>
+
+      <div class="phase" id="p11">
+        <div class="phase-head"><span class="phase-n">11</span><h3>Threads, scheduling, synchronisation</h3></div>
+        <p>The TSS you built in Phase 04 already carries <code>RSP0</code>, the kernel stack the CPU switches to on a privilege transition. Now write the context switch: save the callee-saved registers (<code>rbx</code>, <code>rbp</code>, <code>r12</code>–<code>r15</code>) on the outgoing stack, save <code>RSP</code> into the outgoing thread, load <code>RSP</code> from the incoming one, swap <code>CR3</code> if the address space differs, pop, <code>ret</code>. That <code>ret</code> returns into whatever the incoming thread was doing, which is a genuinely strange thing to watch work in GDB the first time.</p>
+        <p>Give every thread its own kernel stack — sharing one is an instant and confusing crash. Get a <em>cooperative</em> scheduler working first, with explicit <code>yield()</code>, because debugging a cooperative scheduler is possible and debugging a broken preemptive one is much less so. Then move <code>schedule()</code> into the timer interrupt, round robin, 10 ms quantum.</p>
+        <p>Preemption introduces a class of bug you have not met: anything touching the run queue must run with interrupts disabled, or a tick mid-list-manipulation corrupts it. Write <code>irq_save()</code>/<code>irq_restore()</code> and be rigorous. Then spinlocks via <code>lock cmpxchg</code>, and mutexes and semaphores that actually block — the thread leaves the run queue for a wait queue rather than spinning.</p>
+        <div class="trap"><b>The trap</b><p>Make the idle thread <code>hlt</code> rather than spin, or QEMU pins a host core at 100% and you will spend a day looking for a performance bug in your scheduler that is really a busy-wait in your idle loop.</p></div>
+        <div class="done"><b>Done when</b> N threads incrementing a shared counter M times each under a lock produce exactly N×M in CI. Run it once <em>without</em> the lock and watch it come out wrong — that is the whole reason the lock exists.</div>
+      </div>
+
+      <div class="phase" id="p12">
+        <div class="phase-head"><span class="phase-n">12</span><h3>Ring 3</h3></div>
+        <p>The hardest conceptual jump in the project. Give it concentrated time rather than three-hour evening chunks.</p>
+        <p>Add GDT entries for user code and data at DPL 3, then configure the <code>syscall</code>/<code>sysret</code> MSRs: <code>STAR</code> (<code>0xC0000081</code>) for the segment selectors, <code>LSTAR</code> (<code>0xC0000082</code>) for the entry point, <code>SFMASK</code> (<code>0xC0000084</code>) for flags cleared on entry — clear <code>IF</code>, you do not want interrupts enabled before you have switched stacks. Set bit 0 of <code>EFER</code>. Do not use <code>int 0x80</code>; it is the 1990s answer and anyone reading your code will notice.</p>
+        <p>The entry path is fiddly. <code>syscall</code> does not switch stacks, so on entry you are still on the user stack with user data in every register. <code>swapgs</code> exchanges <code>GS_BASE</code> with <code>KERNEL_GS_BASE</code> (<code>0xC0000102</code>), giving you per-CPU data from which to fetch the kernel stack. Switch stacks, save the user frame, enable interrupts, dispatch; on the way out disable interrupts, restore, <code>swapgs</code> again, <code>sysretq</code>. Note that <code>syscall</code> clobbers <code>RCX</code> and <code>R11</code>, which is why the argument register for the fourth parameter is <code>R10</code> and not <code>RCX</code>.</p>
+        <div class="trap"><b>The trap</b><p>Getting the <code>swapgs</code> pairing wrong on the return path is a privilege escalation in your own kernel. An NMI or <code>#DB</code> arriving in the window where <code>GS</code> is the wrong one is the classic hazard — this is what IST stacks and careful entry sequencing exist for. When you get it right, write it up; that writeup is worth a great deal in an interview.</p></div>
+        <div class="done"><b>Done when</b> a hand-written assembly program entered via <code>iretq</code> calls <code>write</code> and <code>exit</code>, and you watch the timer preempt it mid-execution and resume it.</div>
+      </div>
+
+      <div class="phase" id="p13">
+        <div class="phase-head"><span class="phase-n">13</span><h3>Processes, fork, copy-on-write, exec</h3></div>
+        <p>A syscall dispatch table indexed by <code>RAX</code>, with arguments in <code>RDI</code>, <code>RSI</code>, <code>RDX</code>, <code>R10</code>, <code>R8</code>, <code>R9</code>. Then the part that actually matters: <strong>every pointer from userspace is validated before you touch it.</strong> Is it in the lower half? Is the whole range mapped in this address space? Is it user-accessible? Write <code>copy_from_user</code> and <code>copy_to_user</code> and never dereference a user pointer directly, anywhere, for any reason.</p>
+        <p>Then an ELF64 loader — check <code>e_ident</code>, walk the program headers, and for each <code>PT_LOAD</code> map at <code>p_vaddr</code> with permissions from <code>p_flags</code>, copy <code>p_filesz</code> bytes and zero the remaining <code>p_memsz - p_filesz</code> for BSS. Then <code>fork</code>: clone the address space, clone the calling thread with identical registers except <code>RAX = 0</code> in the child.</p>
+        <p>Build <code>fork</code> on copy-on-write from the start, since Phase 10 gave you the fault machinery. Map shared frames read-only into both address spaces and refcount them; on a write fault to a COW page, allocate a fresh frame, copy, remap writable, decrement, and when the count reaches one make the last holder writable again. Then <code>exec</code>, <code>exit</code>, <code>wait</code>, zombie reaping, and reparenting orphans to PID 1.</p>
+        <div class="done"><b>Done when</b> a test forks a thousand times and free frame count returns <em>exactly</em> to baseline. A drift of one frame is a real leak — stop and find it, because it will still be there in month twelve. And every malicious pointer you can invent — null, kernel addresses, unmapped pages, ranges that start valid and cross into unmapped memory — returns <code>-EFAULT</code> rather than panicking.</div>
+      </div>
+
+      <div class="phase" id="p14">
+        <div class="phase-head"><span class="phase-n">14</span><h3>Signals and the terminal layer</h3></div>
+        <p>Both missing from the guide, and both are why its week-47 "userspace shell" wouldn't really be a shell.</p>
+        <p>Signals: a pending mask and a handler table per process, delivery checked on the return path to userspace, and a trampoline that pushes a signal frame onto the user stack so the handler returns through <code>sigreturn</code>. Get <code>SIGSEGV</code>, <code>SIGKILL</code>, <code>SIGCHLD</code> and <code>SIGINT</code> working.</p>
+        <p>Then a TTY layer between the keyboard and the shell: a line discipline with canonical mode (line buffering, backspace handled in-kernel), an echo setting, and control character interpretation — Ctrl-C raising <code>SIGINT</code> on the foreground process group, Ctrl-D signalling EOF. Process groups and a foreground group per terminal are what make job control possible later.</p>
+        <div class="done"><b>Done when</b> Ctrl-C interrupts a running program and returns you to the prompt, and a program that installs a <code>SIGINT</code> handler survives it instead.</div>
+      </div>
+
+      <div class="phase" id="p15">
+        <div class="phase-head"><span class="phase-n">15</span><h3>Storage: device, cache, VFS, filesystems</h3></div>
+        <p>PCI enumeration through configuration ports <code>0xCF8</code>/<code>0xCFC</code>, looking for vendor <code>0x1AF4</code>. Then virtio-blk: feature negotiation, then the virtqueue — a descriptor table, an available ring you write, a used ring the device writes, a request as three chained descriptors (header, data, status), a kick to the notify register, and a completion interrupt. Choose virtio over AHCI: it is substantially less work for the same abstraction and it is what runs under every cloud VM in existence.</p>
+        <p>Put a buffer cache in front of it with dirty tracking and writeback before you build a filesystem, not after, or every <code>read()</code> hits the device and you will retrofit the cache through code that assumed synchronous I/O.</p>
+        <p>Design the VFS before the second filesystem rather than after: an inode with type, size and filesystem-private data; a dentry cache for path lookups; a <code>file_operations</code> vtable; a mount table; and path resolution that crosses mount points. Be explicit about refcounting and locking on inodes and dentries from day one — that is where filesystem bugs live forever. Prove the abstraction with a trivial ramfs, then implement ext2 (superblock at offset 1024, magic <code>0xEF53</code>; direct then singly, doubly and triply indirect blocks are what take the time). Read support fully working first, then write.</p>
+        <p>Then add FAT32 — not because you need it, but because it is the test of whether your VFS is an abstraction or just ext2 with extra steps. If adding it requires changing VFS internals, your layering is wrong and this is the week to find out.</p>
+        <div class="done"><b>Done when</b> CI builds an ext2 image on the host with <code>mke2fs</code>, boots the kernel, reads known files, and asserts contents byte for byte — and when a corrupted image can be diagnosed by running the host's <code>fsck</code> against your own writes.</div>
+      </div>
+
+      <div class="phase" id="p16">
+        <div class="phase-head"><span class="phase-n">16</span><h3>Userspace</h3></div>
+        <p>Write your own libc rather than porting newlib. Porting is more "correct" and teaches almost nothing; a 1,500-line libc you understand completely is worth more here than a 200,000-line one you configured. You need <code>crt0.S</code>, syscall wrappers, <code>malloc</code>/<code>free</code> over an <code>mmap</code> syscall, a stdio subset, and the string functions.</p>
+        <p>Then pipes — a ring buffer with reader and writer wait queues, correct blocking semantics (read blocks when empty unless all writers closed; write blocks when full), <code>dup2</code> for redirection, and <code>SIGPIPE</code> now that Phase 14 gave you signals.</p>
+        <p>Then the shell as a separately compiled userspace binary: parse a line, fork, <code>dup2</code> the descriptors, exec, wait. Support <code>&gt;</code>, <code>&lt;</code>, <code>|</code>, and background jobs with <code>&amp;</code>. Then coreutils — <code>ls</code>, <code>cat</code>, <code>echo</code>, <code>wc</code>, <code>ps</code>, <code>kill</code>, <code>mkdir</code>, <code>rm</code>, <code>touch</code>, <code>head</code> — each a real ELF on disk. Finally a root filesystem image built by the Makefile, mounted at boot, with the kernel exec'ing <code>/bin/init</code>.</p>
+        <div class="done"><b>Done when</b> <code>cat file.txt | wc -l</code> runs two processes loaded from your own filesystem, talking through a pipe you implemented, with no binaries embedded in the kernel image. That is the headline recording, and it is the moment this stops being a kernel and becomes an operating system.</div>
+      </div>
+
+      <div class="phase" id="p17">
+        <div class="phase-head"><span class="phase-n">17</span><h3>Real hardware</h3></div>
+        <p>Write the image to a USB stick and boot a physical machine. It will fail differently than QEMU did: real firmware memory maps have holes and reserved regions QEMU never produces, real PS/2 controllers need genuine initialisation rather than a sane assumed state, and real disks are slow enough that timing assumptions break.</p>
+        <p>Budget properly, because the debugging loop is brutal — no GDB, and only serial output if the machine has a port. This is also where your Phase 02 investment pays off the most: a kernel that can describe its own failure over a serial cable is the difference between an afternoon and a fortnight.</p>
+        <div class="done"><b>Done when</b> you have a photograph of your shell running on physical silicon. It is the single best image you will ever put in that README.</div>
+      </div>
+
+      <div class="phase" id="p18">
+        <div class="phase-head"><span class="phase-n">18</span><h3>Exactly one depth track</h3></div>
+        <p>Not all three. Depth beats breadth, and by this point you are demonstrating judgement as much as knowledge.</p>
+        <p><strong>SMP</strong> is the strongest signal for infrastructure and systems work: LAPIC startup, the AP trampoline that must live below 1 MB in real mode, per-CPU data through <code>GS</code>, IPIs, TLB shootdown, and the discovery that half your locking was subtly wrong all along because you only ever had one CPU. <strong>Networking</strong> is strongest for backend: virtio-net, ARP, IPv4, ICMP, UDP, then a minimal TCP whose state machine is a month by itself. <strong>Graphics</strong> is the weakest technically and the strongest as a demo: framebuffer, double buffering, a compositor, windows and a cursor.</p>
+        <div class="done"><b>Done when</b> you have shipped one of them properly, rather than three of them halfway.</div>
+      </div>
+    </section>
+
+    <section id="writing">
+      <h2>Write it down as you go</h2>
+      <p>The guide leaves all the writing to weeks 53–56, by which point the details have gone. Do it at the end of each phase instead, while the bug is still fresh.</p>
+      <p>Not tutorials — nobody needs another IDT tutorial. Build each piece around a specific bug you hit and how you found it: the red zone corruption that only appeared under interrupt load, the missing slave EOI that made one IRQ fire exactly once, the COW refcount that drifted by a single frame per thousand forks. Those are the stories that demonstrate judgement rather than recall, and they are what an interviewer will actually ask you about.</p>
+      <p>One more discipline worth keeping: when a phase's "done when" check fails, fix it before starting the next phase. The reason this repository needed a rebuild is not that any single defect was hard — it is that nothing ever verified the previous step, so fifteen defects stacked up behind a README claiming they were not there.</p>
+    </section>
+
+    <footer>
+      <p>Checked against <code>7f8239c</code>. Everything above came out of the committed bytes or the source, not out of the guide.</p>
+    </footer>
+
+  </main>
+</div>
