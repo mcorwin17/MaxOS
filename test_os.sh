@@ -1,45 +1,28 @@
 #!/bin/bash
-# Test script for MaxOS - Enhanced Version
+# Build and boot MaxOS.
+set -euo pipefail
 
-echo "🚀 MaxOS Test Script"
-echo "==================="
+TARGET=i686-elf
 
-# Check if dependencies are installed
-echo "Checking dependencies..."
-if ! command -v nasm >/dev/null 2>&1; then
-    echo "❌ NASM not found. Install with: brew install nasm"
+missing=0
+for tool in nasm "${TARGET}-gcc" "${TARGET}-ld" qemu-system-i386; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+        echo "missing: $tool"
+        missing=1
+    fi
+done
+
+if [ "$missing" -ne 0 ]; then
+    echo
+    echo "Need the cross toolchain, not host gcc. On Debian/Ubuntu:"
+    echo "  apt install nasm qemu-system-x86"
+    echo "  then build i686-elf gcc/binutils and put it on PATH (see build.sh)"
     exit 1
 fi
 
-if ! command -v qemu-system-i386 >/dev/null 2>&1; then
-    echo "❌ QEMU not found. Install with: brew install qemu"
-    exit 1
-fi
+make clean
+make
 
-echo "✅ Dependencies found!"
-
-# Build the OS
-echo ""
-echo "🔨 Building MaxOS..."
-make clean && make
-
-if [ $? -ne 0 ]; then
-    echo "❌ Build failed!"
-    exit 1
-fi
-
-echo "✅ Build successful!"
-
-# Show build info
-echo ""
-echo "📊 Build Information:"
-make info
-
-echo ""
-echo "🎮 Starting MaxOS in QEMU..."
-echo "You should see a black screen with MaxOS welcome message"
-echo "Press Ctrl+C to exit QEMU"
-echo ""
-
-# Run QEMU with cocoa display (works best on macOS)
-qemu-system-i386 -fda floppy.img -boot a -display cocoa -m 16
+echo
+echo "Booting, ctrl-C to quit."
+qemu-system-i386 -fda floppy.img -boot a -m 16
