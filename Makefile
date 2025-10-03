@@ -1,26 +1,41 @@
 # MaxOS
 #
-# Needs an i686-elf cross toolchain. See build.sh for the prefix I use.
+# Wants an i686-elf cross toolchain. If you don't have one, clang works fine -
+# it cross compiles out of the box, you just have to name the target.
 
 TARGET  := i686-elf
-CC      := $(TARGET)-gcc
-LD      := $(TARGET)-ld
 ASM     := nasm
+QEMU    := qemu-system-i386
 
-# Don't let a host compiler anywhere near this. Host objects link fine and
-# aren't x86 machine code, which is a miserable way to lose an evening.
-ifeq ($(findstring -elf-,$(CC)),)
-$(error CC=$(CC) is not a cross compiler, expected $(TARGET)-gcc)
+# Prefer a real cross gcc, otherwise clang with an explicit target.
+ifneq ($(shell command -v $(TARGET)-gcc 2>/dev/null),)
+  CC        := $(TARGET)-gcc
+  CCTARGET  :=
+  LD        := $(TARGET)-ld
+else ifneq ($(shell command -v clang 2>/dev/null),)
+  CC        := clang
+  CCTARGET  := --target=$(TARGET)
+  LD        := ld.lld
+else
+  $(error No cross compiler. Install $(TARGET)-gcc, or clang + lld)
 endif
 
-# -ffunction-sections so _start lands in .text._start and link.ld can put it
-# first; the bootloader jumps to 0x1000 blind.
-CFLAGS  := -m32 -ffreestanding -nostdlib -fno-pic -ffunction-sections \
-           -fno-stack-protector -Wall -Wextra -O2
+# Never let a host-targeted build through. That's how an arm64 Mach-O ended up
+# in the disk image being jumped to as x86.
+ifeq ($(CC),clang)
+  ifeq ($(CCTARGET),)
+    $(error clang without --target would build for the host)
+  endif
+endif
+
+# -ffunction-sections so _start goes in .text._start and link.ld can put it
+# first; the bootloader jumps to 0x1000 with no idea what's there.
+CFLAGS  := $(CCTARGET) -m32 -ffreestanding -nostdlib -fno-pic \
+           -ffunction-sections -fno-stack-protector -Wall -Wextra -O2
 
 SECTORS := 32          # keep in sync with KERNEL_SECTOR_COUNT in boot.asm
 
-.PHONY: all clean qemu help
+.PHONY: all clean qemu boot-test help
 .DEFAULT_GOAL := all
 
 all: floppy.img
@@ -38,22 +53,46 @@ build/kernel.o: kernel/kernel.c | build
 bin/kernel.bin: build/kernel.o kernel/link.ld | bin
 	$(LD) -m elf_i386 -T kernel/link.ld -o $@ $<
 
-floppy.img: bin/boot.bin bin/kernel.bin
+# $1 = kernel binary, $2 = output image
+define make_image
 	@test $$(stat -c%s bin/boot.bin) -eq 512 || \
 		{ echo "boot.bin is not 512 bytes"; exit 1; }
-	@test $$(stat -c%s bin/kernel.bin) -le $$((512 * $(SECTORS))) || \
-		{ echo "kernel > $(SECTORS) sectors, bump KERNEL_SECTOR_COUNT"; exit 1; }
-	dd if=/dev/zero of=$@ bs=512 count=2880 status=none
-	dd if=bin/boot.bin   of=$@ conv=notrunc bs=512 count=1 status=none
-	dd if=bin/kernel.bin of=$@ conv=notrunc bs=512 seek=1 status=none
+	@test $$(stat -c%s $(1)) -le $$((512 * $(SECTORS))) || \
+		{ echo "$(1) > $(SECTORS) sectors, bump KERNEL_SECTOR_COUNT"; exit 1; }
+	dd if=/dev/zero of=$(2) bs=512 count=2880 status=none
+	dd if=bin/boot.bin of=$(2) conv=notrunc bs=512 count=1 status=none
+	dd if=$(1) of=$(2) conv=notrunc bs=512 seek=1 status=none
+endef
+
+floppy.img: bin/boot.bin bin/kernel.bin
+	$(call make_image,bin/kernel.bin,floppy.img)
 
 qemu: floppy.img
-	qemu-system-i386 -fda floppy.img -boot a
+	$(QEMU) -fda floppy.img -boot a
+
+# Boots a tiny asm kernel that reports over serial, so the whole boot path is
+# checkable without a C toolchain and without a human looking at a screen.
+bin/boot-test.bin: tests/boot-test.asm | bin
+	$(ASM) -f bin $< -o $@
+
+boot-test: bin/boot.bin bin/boot-test.bin
+	$(call make_image,bin/boot-test.bin,bin/boot-test.img)
+	@rm -f bin/boot-test.log
+	@-$(QEMU) -fda bin/boot-test.img -boot a \
+		-device isa-debug-exit,iobase=0xf4,iosize=0x04 \
+		-serial file:bin/boot-test.log \
+		-display none -no-reboot
+	@grep -q "boot path works" bin/boot-test.log \
+		&& echo "boot-test: PASS" \
+		|| { echo "boot-test: FAIL"; cat bin/boot-test.log; exit 1; }
 
 clean:
 	rm -rf bin build floppy.img
 
 help:
-	@echo "make        build floppy.img"
-	@echo "make qemu   boot it"
+	@echo "make             build floppy.img"
+	@echo "make qemu        boot it"
+	@echo "make boot-test   boot a stub kernel, check it reports over serial"
 	@echo "make clean"
+	@echo ""
+	@echo "using CC=$(CC) $(CCTARGET), LD=$(LD)"
