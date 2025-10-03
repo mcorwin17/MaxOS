@@ -11,19 +11,35 @@ It's early. No interrupts, no keyboard, no memory management, no filesystem.
 
 | | |
 |---|---|
-| Boot sector (512B, BIOS) | written, **not booted yet** |
-| Disk load via `int 13h`, with retry | written, not booted yet |
-| GDT + protected mode switch | written, not booted yet |
-| C kernel, VGA text output | written, not booted yet |
+| Boot sector (512B, BIOS) | **works**, booted in QEMU |
+| Disk load via `int 13h`, with retry | **works** |
+| GDT + protected mode switch | **works** |
+| Handoff to the kernel at `0x1000` | **works** |
+| C kernel, VGA text output | compiles, not booted yet |
 | Interrupts | todo |
 | Keyboard | todo |
 | Memory management | todo |
 | Filesystem | todo |
 
-"Not booted yet" is doing real work in that table. I don't have the cross
-toolchain installed on this machine right now, so none of the current code has
-been assembled or run. I'm not claiming any of it works until I've watched it
-work — the last version of this repo claimed a lot more than it did.
+`make boot-test` is what backs the "works" rows. It boots a stub kernel
+([tests/boot-test.asm](tests/boot-test.asm)) that reports over COM1 and then
+quits through `isa-debug-exit`, so the whole path — boot sector entry, disk
+read, GDT, protected mode switch, handoff to `0x1000` — gets checked without a
+C toolchain and without anyone watching a screen. A pass looks like:
+
+```
+kernel reached 0x1000, boot path works
+```
+
+The C kernel row still says "not booted" because that's a separate thing from
+the boot path working. Nothing moves to "works" until I've watched it run.
+
+### Known issue
+
+The kernel load asks for 32 sectors in one `int 13h` call starting at CHS
+0/0/2, which runs past the 18-sector track boundary. SeaBIOS papers over it,
+real BIOSes often won't. Wants a per-track loop or LBA (`AH=42h`) before this
+ever goes near a USB stick.
 
 ## Building
 
