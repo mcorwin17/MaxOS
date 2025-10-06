@@ -40,6 +40,21 @@
 #define SYSTEM_STATUS_ERROR    0x02
 #define SYSTEM_STATUS_WARNING  0x04
 
+/* COM1. Worth having early: it's the only output that leaves the VM, so it's
+ * what a test harness or a debugger on the other end can actually read. VGA
+ * is for looking at. */
+#define COM1                   0x3F8
+
+static inline void outb(uint16_t port, uint8_t value) {
+    __asm__ volatile("outb %0, %1" : : "a"(value), "Nd"(port));
+}
+
+static inline uint8_t inb(uint16_t port) {
+    uint8_t value;
+    __asm__ volatile("inb %1, %0" : "=a"(value) : "Nd"(port));
+    return value;
+}
+
 static struct {
     uint8_t x;
     uint8_t y;
@@ -50,6 +65,9 @@ static uint8_t system_status = SYSTEM_STATUS_READY;
 void kernel_main(void);
 void system_initialize(void);
 void video_initialize(void);
+void serial_initialize(void);
+void serial_write_char(char c);
+void serial_write(const char* str);
 void clear_screen(void);
 void set_cursor_position(uint8_t x, uint8_t y);
 void print_character(char c);
@@ -73,15 +91,20 @@ void _start(void) {
 
 void kernel_main(void) {
     system_initialize();
+    serial_write("kernel_main: entered\n");
 
     print_system_banner();
     print_system_information();
     print_status_message();
 
     system_status = SYSTEM_STATUS_READY;
+    serial_write("kernel_main: init done, halting\n");
 }
 
 void system_initialize(void) {
+    serial_initialize();
+    serial_write("\nMaxOS 0.1\n");
+
     video_initialize();
     clear_screen();
     set_cursor_position(0, 0);
@@ -90,6 +113,33 @@ void system_initialize(void) {
 void video_initialize(void) {
     /* Nothing to do. The BIOS already left us in mode 3 and the text buffer
      * is always mapped at 0xB8000. */
+}
+
+/* 38400 8N1. Divisor 3 off the 115200 base clock. */
+void serial_initialize(void) {
+    outb(COM1 + 1, 0x00);   /* interrupts off while we set it up */
+    outb(COM1 + 3, 0x80);   /* DLAB on, so 0 and 1 become the divisor */
+    outb(COM1 + 0, 0x03);   /* divisor low */
+    outb(COM1 + 1, 0x00);   /* divisor high */
+    outb(COM1 + 3, 0x03);   /* 8 bits, no parity, one stop, DLAB off */
+    outb(COM1 + 2, 0xC7);   /* FIFO on, cleared, 14 byte threshold */
+    outb(COM1 + 4, 0x0B);   /* RTS/DSR */
+}
+
+void serial_write_char(char c) {
+    while (!(inb(COM1 + 5) & 0x20)) {
+        /* wait for the transmit holding register to drain */
+    }
+    outb(COM1, (uint8_t)c);
+}
+
+void serial_write(const char* str) {
+    if (!str) return;
+
+    for (size_t i = 0; str[i] != '\0'; ++i) {
+        if (str[i] == '\n') serial_write_char('\r');
+        serial_write_char(str[i]);
+    }
 }
 
 
