@@ -35,7 +35,7 @@ CFLAGS  := $(CCTARGET) -m32 -ffreestanding -nostdlib -fno-pic \
 
 SECTORS := 32          # keep in sync with KERNEL_SECTOR_COUNT in boot.asm
 
-.PHONY: all clean qemu boot-test help
+.PHONY: all clean qemu boot-test kernel-test test help
 .DEFAULT_GOAL := all
 
 all: floppy.img
@@ -86,13 +86,28 @@ boot-test: bin/boot.bin bin/boot-test.bin
 		&& echo "boot-test: PASS" \
 		|| { echo "boot-test: FAIL"; cat bin/boot-test.log; exit 1; }
 
+# Boots the real kernel and checks it got through kernel_main. It halts rather
+# than exiting, so this needs a timeout - that's the point, a hang is a failure.
+kernel-test: floppy.img
+	@rm -f bin/kernel-test.log
+	@-timeout 20 $(QEMU) -fda floppy.img -boot a \
+		-display none -no-reboot \
+		-serial file:bin/kernel-test.log
+	@grep -q "init done" bin/kernel-test.log \
+		&& echo "kernel-test: PASS" \
+		|| { echo "kernel-test: FAIL"; cat bin/kernel-test.log 2>/dev/null; exit 1; }
+
+test: boot-test kernel-test
+
 clean:
 	rm -rf bin build floppy.img
 
 help:
 	@echo "make             build floppy.img"
 	@echo "make qemu        boot it"
-	@echo "make boot-test   boot a stub kernel, check it reports over serial"
+	@echo "make boot-test   boot a stub kernel, check the boot path"
+	@echo "make kernel-test boot the real kernel, check it reaches kernel_main"
+	@echo "make test        both of the above"
 	@echo "make clean"
 	@echo ""
 	@echo "using CC=$(CC) $(CCTARGET), LD=$(LD)"

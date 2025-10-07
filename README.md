@@ -15,24 +15,31 @@ It's early. No interrupts, no keyboard, no memory management, no filesystem.
 | Disk load via `int 13h`, with retry | **works** |
 | GDT + protected mode switch | **works** |
 | Handoff to the kernel at `0x1000` | **works** |
-| C kernel, VGA text output | compiles, not booted yet |
+| C kernel, VGA text output | **works**, reaches `kernel_main` |
+| Serial (COM1) output | **works** |
 | Interrupts | todo |
 | Keyboard | todo |
 | Memory management | todo |
 | Filesystem | todo |
 
-`make boot-test` is what backs the "works" rows. It boots a stub kernel
-([tests/boot-test.asm](tests/boot-test.asm)) that reports over COM1 and then
-quits through `isa-debug-exit`, so the whole path — boot sector entry, disk
-read, GDT, protected mode switch, handoff to `0x1000` — gets checked without a
-C toolchain and without anyone watching a screen. A pass looks like:
+`make test` is what backs the "works" rows. Two checks, both over serial so
+nothing depends on a human squinting at a QEMU window:
+
+- **`make boot-test`** boots a stub kernel ([tests/boot-test.asm](tests/boot-test.asm))
+  and exits through `isa-debug-exit`. Covers the boot path on its own: boot
+  sector entry, disk read, GDT, protected mode switch, handoff to `0x1000`.
+- **`make kernel-test`** boots the real thing and checks it gets through
+  `kernel_main`. Output:
 
 ```
-kernel reached 0x1000, boot path works
+MaxOS 0.1
+kernel_main: entered
+kernel_main: init done, halting
 ```
 
-The C kernel row still says "not booted" because that's a separate thing from
-the boot path working. Nothing moves to "works" until I've watched it run.
+Serial is deliberately the primary output. VGA text is nice to look at but
+can't be read from outside the VM, so it's useless the moment you want a test
+to check something.
 
 ### Known issue
 
