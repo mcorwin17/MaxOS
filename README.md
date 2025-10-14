@@ -16,8 +16,10 @@ It's early. No interrupts, no keyboard, no memory management, no filesystem.
 | GDT + protected mode switch | **works** |
 | Handoff to the kernel at `0x1000` | **works** |
 | C kernel, VGA text output | **works**, reaches `kernel_main` |
-| Serial (COM1) output | **works** |
-| Interrupts | todo |
+| Serial (COM1) output, `kprintf` | **works** |
+| IDT + 32 exception handlers | **works**, faults report and halt |
+| `panic()` / `KASSERT` + backtrace | **works** |
+| PIC remap + timer | todo |
 | Keyboard | todo |
 | Memory management | todo |
 | Filesystem | todo |
@@ -29,12 +31,24 @@ nothing depends on a human squinting at a QEMU window:
   and exits through `isa-debug-exit`. Covers the boot path on its own: boot
   sector entry, disk read, GDT, protected mode switch, handoff to `0x1000`.
 - **`make kernel-test`** boots the real thing and checks it gets through
-  `kernel_main`. Output:
+  `kernel_main`.
+- **`make fault-test`** deliberately faults on vectors 0, 6 and 13 and checks
+  each one is *reported* rather than triple-faulting. 0 and 6 use the dummy
+  error code path, 13 gets a real one from the CPU, so it exercises both stub
+  shapes. A general protection fault looks like:
 
 ```
-MaxOS 0.1
-kernel_main: entered
-kernel_main: init done, halting
+=== exception 13: general protection fault ===
+
+*** PANIC ***
+general protection fault
+vector 13  error 0x00000050
+eip 0x000011cd  cs 0x0008  eflags 0x00010016
+eax 0x00000050  ebx 0x00001000  ecx 0x00000000  edx 0x000003f8
+esi 0x000b8000  edi 0x00000000  ebp 0x0008fff4  ds  0x0010
+backtrace:
+  [0] 0x00001008
+halted.
 ```
 
 Serial is deliberately the primary output. VGA text is nice to look at but

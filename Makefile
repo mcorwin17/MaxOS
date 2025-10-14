@@ -30,10 +30,23 @@ endif
 
 # -ffunction-sections so _start goes in .text._start and link.ld can put it
 # first; the bootloader jumps to 0x1000 with no idea what's there.
+# -fno-omit-frame-pointer so panic() can walk the ebp chain for a backtrace.
+#
+# The -mno-* flags are not optional. At -O2 the compiler will happily vectorise
+# a string loop into movsd/movaps, and SSE raises #UD until CR4.OSFXSR is set.
+# That fault arrives before the IDT exists, so it triple faults and the machine
+# silently resets. Cost me an afternoon. Turn SSE back on only alongside
+# OSFXSR/OSXMMEXCPT and saving FPU state on context switch.
 CFLAGS  := $(CCTARGET) -m32 -ffreestanding -nostdlib -fno-pic \
-           -ffunction-sections -fno-stack-protector -Wall -Wextra -O2
+           -ffunction-sections -fno-omit-frame-pointer \
+           -mno-mmx -mno-sse -mno-sse2 -mno-80387 \
+           -fno-stack-protector -Wall -Wextra -O2 $(CFLAGS_EXTRA)
 
 SECTORS := 32          # keep in sync with KERNEL_SECTOR_COUNT in boot.asm
+
+# kernel.o first so _start lands at the front even before link.ld sorts it
+COBJS   := build/kernel.o build/serial.o build/panic.o build/idt.o
+OBJS    := $(COBJS) build/isr.o
 
 .PHONY: all clean qemu boot-test kernel-test test help
 .DEFAULT_GOAL := all
@@ -47,11 +60,14 @@ bin build:
 bin/boot.bin: bootloader/boot.asm $(wildcard bootloader/*.asm) | bin
 	$(ASM) -f bin $< -o $@
 
-build/kernel.o: kernel/kernel.c | build
+build/%.o: kernel/%.c $(wildcard kernel/*.h) | build
 	$(CC) $(CFLAGS) -c $< -o $@
 
-bin/kernel.bin: build/kernel.o kernel/link.ld | bin
-	$(LD) -m elf_i386 -T kernel/link.ld -o $@ $<
+build/isr.o: kernel/isr.asm | build
+	$(ASM) -f elf32 $< -o $@
+
+bin/kernel.bin: $(OBJS) kernel/link.ld | bin
+	$(LD) -m elf_i386 -T kernel/link.ld -o $@ $(OBJS)
 
 # $1 = kernel binary, $2 = output image
 define make_image
@@ -97,7 +113,27 @@ kernel-test: floppy.img
 		&& echo "kernel-test: PASS" \
 		|| { echo "kernel-test: FAIL"; cat bin/kernel-test.log 2>/dev/null; exit 1; }
 
-test: boot-test kernel-test
+# Deliberately fault and check the handler says so instead of resetting.
+# Covers both stub shapes: 0 and 6 push a dummy error code, 13 gets a real one
+# from the CPU. If those two paths disagree the frame is misaligned and every
+# register in the dump is wrong.
+fault-test:
+	@for v in 0 6 13; do \
+		echo "vector $$v:"; \
+		$(MAKE) --no-print-directory clean >/dev/null 2>&1; \
+		$(MAKE) --no-print-directory CFLAGS_EXTRA=-DTEST_FAULT=$$v floppy.img >/dev/null || exit 1; \
+		rm -f bin/fault.log; \
+		timeout 20 $(QEMU) -fda floppy.img -boot a -display none -no-reboot \
+			-serial file:bin/fault.log >/dev/null 2>&1 || true; \
+		if grep -q "exception $$v" bin/fault.log; then \
+			echo "  PASS"; \
+		else \
+			echo "  FAIL"; cat bin/fault.log; exit 1; \
+		fi; \
+	done
+	@$(MAKE) --no-print-directory clean >/dev/null 2>&1
+
+test: boot-test kernel-test fault-test
 
 clean:
 	rm -rf bin build floppy.img
