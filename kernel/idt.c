@@ -3,6 +3,7 @@
 #include "idt.h"
 #include "panic.h"
 #include "serial.h"
+#include "pic.h"
 
 #define IDT_ENTRIES     256
 #define KERNEL_CODE_SEG 0x08
@@ -45,6 +46,20 @@ static void (*const exception_stubs[32])(void) = {
     isr16, isr17, isr18, isr19, isr20, isr21, isr22, isr23,
     isr24, isr25, isr26, isr27, isr28, isr29, isr30, isr31
 };
+
+extern void irq0(void);  extern void irq1(void);  extern void irq2(void);
+extern void irq3(void);  extern void irq4(void);  extern void irq5(void);
+extern void irq6(void);  extern void irq7(void);  extern void irq8(void);
+extern void irq9(void);  extern void irq10(void); extern void irq11(void);
+extern void irq12(void); extern void irq13(void); extern void irq14(void);
+extern void irq15(void);
+
+static void (*const irq_stubs[16])(void) = {
+    irq0,  irq1,  irq2,  irq3,  irq4,  irq5,  irq6,  irq7,
+    irq8,  irq9,  irq10, irq11, irq12, irq13, irq14, irq15
+};
+
+static irq_handler_fn irq_handlers[16] = { 0 };
 
 static const char* const exception_names[32] = {
     "divide error",
@@ -97,7 +112,19 @@ void idt_initialize(void) {
         idt_set_gate(i, (uint32_t)(uintptr_t)exception_stubs[i]);
     }
 
+    /* Remap before installing the IRQ gates, so that if something fires early
+     * it lands on a vector we own rather than on top of an exception. */
+    pic_remap();
+
+    for (int i = 0; i < 16; ++i) {
+        idt_set_gate(PIC_VECTOR_BASE + i, (uint32_t)(uintptr_t)irq_stubs[i]);
+    }
+
     __asm__ volatile("lidt %0" : : "m"(idtp));
+}
+
+void irq_install_handler(uint8_t irq, irq_handler_fn handler) {
+    if (irq < 16) irq_handlers[irq] = handler;
 }
 
 /* Decode the page fault error code, since it's the one worth reading and the
@@ -111,8 +138,21 @@ static void describe_page_fault(uint32_t error_code) {
     if (error_code & 0x10) kprintf("  during an instruction fetch\n");
 }
 
-/* Called from isr_common in isr.asm. */
+/* Called from isr_common in isr.asm, for both exceptions and IRQs. */
 void isr_handler(struct registers* r) {
+    if (r->vector >= PIC_VECTOR_BASE && r->vector < PIC_VECTOR_BASE + 16) {
+        uint8_t irq = (uint8_t)(r->vector - PIC_VECTOR_BASE);
+
+        /* Check before doing anything else: acknowledging an interrupt that
+         * never happened swallows a real one later. */
+        if (pic_is_spurious(irq)) return;
+
+        if (irq_handlers[irq]) irq_handlers[irq](r);
+
+        pic_send_eoi(irq);
+        return;
+    }
+
     const char* name = (r->vector < 32) ? exception_names[r->vector]
                                         : "unknown";
 

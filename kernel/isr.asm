@@ -60,6 +60,34 @@ ISR_ERR   29    ; VMM communication
 ISR_ERR   30    ; security exception
 ISR_NOERR 31    ; reserved
 
+; Hardware IRQs, after the PIC is remapped to 0x20. These never carry an error
+; code, so they always push the dummy. Same common path as the exceptions -
+; the C side tells them apart by vector number.
+%macro IRQ 1
+global irq%1
+irq%1:
+    push dword 0
+    push dword (32 + %1)
+    jmp isr_common
+%endmacro
+
+IRQ 0       ; PIT
+IRQ 1       ; keyboard
+IRQ 2       ; cascade
+IRQ 3
+IRQ 4
+IRQ 5
+IRQ 6
+IRQ 7
+IRQ 8
+IRQ 9
+IRQ 10
+IRQ 11
+IRQ 12
+IRQ 13
+IRQ 14
+IRQ 15
+
 ; By the time we reach the C handler the stack looks exactly like
 ; struct registers in panic.h. Keep the two in step.
 isr_common:
