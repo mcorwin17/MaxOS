@@ -11,6 +11,8 @@
 #include "serial.h"
 #include "idt.h"
 #include "panic.h"
+#include "pic.h"
+#include "pit.h"
 
 /* VGA text mode */
 #define VIDEO_MEMORY_ADDRESS    0xB8000
@@ -55,7 +57,6 @@ void print_system_banner(void);
 void print_system_information(void);
 void print_status_message(void);
 void scroll_screen(void);
-void delay_milliseconds(uint32_t ms);
 uint32_t get_system_uptime(void);
 
 
@@ -116,6 +117,13 @@ void kernel_main(void) {
     kprintf("BUG: still running after the fault\n");
 #endif
 
+    /* Prove the tick is real rather than trusting that it is. */
+    uint32_t before = pit_ticks();
+    sleep_ms(500);
+    uint32_t after = pit_ticks();
+    kprintf("timer: %u ticks over a 500ms sleep, uptime %ums\n",
+            after - before, get_system_uptime());
+
     kprintf("kernel_main: init done, halting\n");
 }
 
@@ -124,7 +132,14 @@ void system_initialize(void) {
     kprintf("\nMaxOS 0.1\n");
 
     idt_initialize();
-    kprintf("idt: 32 exception handlers installed\n");
+    kprintf("idt: exceptions + IRQs installed, PIC remapped to 0x%02x\n",
+            PIC_VECTOR_BASE);
+
+    pit_initialize(PIT_FREQUENCY_HZ);
+    kprintf("pit: %uHz on IRQ0\n", PIT_FREQUENCY_HZ);
+
+    __asm__ volatile("sti");
+    kprintf("interrupts enabled\n");
 
     clear_screen();
     set_cursor_position(0, 0);
@@ -255,7 +270,7 @@ void print_system_banner(void) {
     for (int i = 0; i < 5; ++i) {
         set_cursor_position(25, 2 + i);
         print_colored_string(logo[i], COLOR_CYAN);
-        delay_milliseconds(100);
+        sleep_ms(100);
     }
 
     set_cursor_position(0, 8);
@@ -290,14 +305,6 @@ void print_status_message(void) {
 }
 
 
-/* Busy-wait. Wildly inaccurate and machine-dependent - goes away once the PIT
- * is wired up. */
-void delay_milliseconds(uint32_t ms) {
-    for (volatile uint32_t i = 0; i < ms * 10000; ++i) {
-        __asm__ volatile("nop");
-    }
-}
-
 uint32_t get_system_uptime(void) {
-    return 0;   /* needs the PIT */
+    return pit_uptime_ms();
 }
