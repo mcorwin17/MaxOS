@@ -19,7 +19,8 @@ It's early. No interrupts, no keyboard, no memory management, no filesystem.
 | Serial (COM1) output, `kprintf` | **works** |
 | IDT + 32 exception handlers | **works**, faults report and halt |
 | `panic()` / `KASSERT` + backtrace | **works** |
-| PIC remap + timer | todo |
+| PIC remapped, IRQ dispatch | **works** |
+| PIT timer, `sleep_ms`, uptime | **works**, 100 Hz |
 | Keyboard | todo |
 | Memory management | todo |
 | Filesystem | todo |
@@ -30,8 +31,15 @@ nothing depends on a human squinting at a QEMU window:
 - **`make boot-test`** boots a stub kernel ([tests/boot-test.asm](tests/boot-test.asm))
   and exits through `isa-debug-exit`. Covers the boot path on its own: boot
   sector entry, disk read, GDT, protected mode switch, handoff to `0x1000`.
-- **`make kernel-test`** boots the real thing and checks it gets through
-  `kernel_main`.
+- **`make kernel-test`** boots the real thing, checks it gets through
+  `kernel_main`, and checks the timer counted 50 ticks across a 500 ms sleep:
+
+```
+idt: exceptions + IRQs installed, PIC remapped to 0x20
+pit: 100Hz on IRQ0
+interrupts enabled
+timer: 50 ticks over a 500ms sleep, uptime 1010ms
+```
 - **`make fault-test`** deliberately faults on vectors 0, 6 and 13 and checks
   each one is *reported* rather than triple-faulting. 0 and 6 use the dummy
   error code path, 13 gets a real one from the CPU, so it exercises both stub

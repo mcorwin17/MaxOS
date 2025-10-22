@@ -110,8 +110,14 @@ kernel-test: floppy.img
 		-display none -no-reboot \
 		-serial file:bin/kernel-test.log
 	@grep -q "init done" bin/kernel-test.log \
-		&& echo "kernel-test: PASS" \
-		|| { echo "kernel-test: FAIL"; cat bin/kernel-test.log 2>/dev/null; exit 1; }
+		|| { echo "kernel-test: FAIL (never finished init)"; \
+		     cat bin/kernel-test.log 2>/dev/null; exit 1; }
+	@# 100Hz over a 500ms sleep is 50 ticks. Allow one either side rather than
+	@# demanding exactness from a busy host.
+	@grep -qE "timer: (49|50|51) ticks" bin/kernel-test.log \
+		|| { echo "kernel-test: FAIL (timer not ticking at the right rate)"; \
+		     grep timer: bin/kernel-test.log 2>/dev/null; exit 1; }
+	@echo "kernel-test: PASS"
 
 # Deliberately fault and check the handler says so instead of resetting.
 # Covers both stub shapes: 0 and 6 push a dummy error code, 13 gets a real one
