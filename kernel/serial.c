@@ -3,6 +3,9 @@
 
 #include "serial.h"
 #include "io.h"
+#include "console.h"
+#include "idt.h"
+#include "pic.h"
 
 #define COM1 0x3F8
 
@@ -13,7 +16,11 @@ void serial_initialize(void) {
     outb(COM1 + 0, 0x03);   /* divisor low */
     outb(COM1 + 1, 0x00);   /* divisor high */
     outb(COM1 + 3, 0x03);   /* 8 bits, no parity, one stop, DLAB off */
-    outb(COM1 + 2, 0xC7);   /* FIFO on, cleared, 14 byte threshold */
+    /* FIFO on and cleared, but trigger on a single byte. The usual 0xC7 sets
+     * the threshold to 14, which is fine for bulk transfer and wrong for a
+     * console: a whole typed line arrives faster than 14 bytes' grace and the
+     * 16 byte FIFO overruns before the interrupt ever fires. */
+    outb(COM1 + 2, 0x07);
     outb(COM1 + 4, 0x0B);   /* RTS/DSR */
 }
 
@@ -22,6 +29,24 @@ void serial_write_char(char c) {
         /* wait for the transmit holding register to drain */
     }
     outb(COM1, (uint8_t)c);
+}
+
+/* Interrupt context. Drain everything pending - the FIFO can hold more than
+ * one byte and the controller won't re-raise for what's left behind. */
+static void serial_on_irq(struct registers* r) {
+    (void)r;
+
+    while (inb(COM1 + 5) & 0x01) {          /* data ready */
+        char c = (char)inb(COM1);
+        if (c == '\r') c = '\n';            /* terminals send CR for enter */
+        console_push(c);
+    }
+}
+
+void serial_enable_input(void) {
+    irq_install_handler(4, serial_on_irq);
+    outb(COM1 + 1, 0x01);                   /* receive data available int */
+    pic_unmask(4);
 }
 
 void serial_write(const char* str) {
