@@ -13,29 +13,16 @@
 #include "panic.h"
 #include "pic.h"
 #include "pit.h"
+#include "vga.h"
+#include "kbd.h"
+#include "console.h"
+#include "shell.h"
 
 /* VGA text mode */
 #define VIDEO_MEMORY_ADDRESS    0xB8000
 #define SCREEN_WIDTH           80
 #define SCREEN_HEIGHT          25
 #define CHARACTERS_PER_SCREEN  (SCREEN_WIDTH * SCREEN_HEIGHT)
-
-#define COLOR_BLACK            0x00
-#define COLOR_BLUE             0x01
-#define COLOR_GREEN            0x02
-#define COLOR_CYAN             0x03
-#define COLOR_RED              0x04
-#define COLOR_MAGENTA          0x05
-#define COLOR_BROWN            0x06
-#define COLOR_LIGHT_GRAY       0x07
-#define COLOR_DARK_GRAY        0x08
-#define COLOR_LIGHT_BLUE       0x09
-#define COLOR_LIGHT_GREEN      0x0A
-#define COLOR_LIGHT_CYAN       0x0B
-#define COLOR_LIGHT_RED        0x0C
-#define COLOR_LIGHT_MAGENTA    0x0D
-#define COLOR_YELLOW           0x0E
-#define COLOR_WHITE            0x0F
 
 #define DEFAULT_FOREGROUND     COLOR_WHITE
 #define DEFAULT_BACKGROUND     COLOR_BLACK
@@ -48,14 +35,8 @@ static struct {
 
 void kernel_main(void);
 void system_initialize(void);
-void clear_screen(void);
-void set_cursor_position(uint8_t x, uint8_t y);
-void print_character(char c);
-void print_string(const char* str);
-void print_colored_string(const char* str, uint8_t color);
 void print_system_banner(void);
 void print_system_information(void);
-void print_status_message(void);
 void scroll_screen(void);
 uint32_t get_system_uptime(void);
 
@@ -110,7 +91,6 @@ void kernel_main(void) {
 
     print_system_banner();
     print_system_information();
-    print_status_message();
 
 #ifdef TEST_FAULT
     trigger_test_fault();
@@ -124,7 +104,8 @@ void kernel_main(void) {
     kprintf("timer: %u ticks over a 500ms sleep, uptime %ums\n",
             after - before, get_system_uptime());
 
-    kprintf("kernel_main: init done, halting\n");
+    kprintf("kernel_main: init done, starting shell\n");
+    shell_run();
 }
 
 void system_initialize(void) {
@@ -137,6 +118,12 @@ void system_initialize(void) {
 
     pit_initialize(PIT_FREQUENCY_HZ);
     kprintf("pit: %uHz on IRQ0\n", PIT_FREQUENCY_HZ);
+
+    kbd_initialize();
+    kprintf("kbd: PS/2 on IRQ1\n");
+
+    serial_enable_input();
+    kprintf("serial: input on IRQ4, shell is drivable over COM1\n");
 
     __asm__ volatile("sti");
     kprintf("interrupts enabled\n");
@@ -294,14 +281,17 @@ void print_system_information(void) {
     print_string("Boot Method: BIOS bootloader with kernel loading");
 }
 
-/* No prompt here on purpose. There's no PIC and no keyboard driver, so
- * nothing can read a keystroke - printing a "> " would just be a lie. */
-void print_status_message(void) {
-    set_cursor_position(0, 20);
-    print_colored_string("System Status: Ready", COLOR_LIGHT_GREEN);
+/* Step back one cell and blank it. Stops at the start of a line rather than
+ * wrapping to the end of the previous one, which is wrong but is what the
+ * shell's line editing expects for now. */
+void backspace_character(void) {
+    if (cursor_position.x == 0) return;
 
-    set_cursor_position(0, 21);
-    print_colored_string("No input driver yet - halting after init", COLOR_LIGHT_GRAY);
+    cursor_position.x--;
+
+    volatile uint16_t* video_memory = (volatile uint16_t*)VIDEO_MEMORY_ADDRESS;
+    size_t offset = cursor_position.y * SCREEN_WIDTH + cursor_position.x;
+    video_memory[offset] = (' ' | (DEFAULT_ATTRIBUTE << 8));
 }
 
 

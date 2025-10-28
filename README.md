@@ -21,7 +21,9 @@ It's early. No interrupts, no keyboard, no memory management, no filesystem.
 | `panic()` / `KASSERT` + backtrace | **works** |
 | PIC remapped, IRQ dispatch | **works** |
 | PIT timer, `sleep_ms`, uptime | **works**, 100 Hz |
-| Keyboard | todo |
+| PS/2 keyboard | **works**, IRQ1 |
+| Serial console input | **works**, IRQ4 |
+| Shell | **works**, 8 commands |
 | Memory management | todo |
 | Filesystem | todo |
 
@@ -59,9 +61,30 @@ backtrace:
 halted.
 ```
 
-Serial is deliberately the primary output. VGA text is nice to look at but
-can't be read from outside the VM, so it's useless the moment you want a test
-to check something.
+- **`make shell-test`** types at the shell over COM1 and checks it answers.
+
+Serial is deliberately the primary channel, in both directions. VGA text is
+nice to look at but can't be read from outside the VM, and a keyboard can't be
+typed at by a script — so the keyboard IRQ and serial receive both feed the
+same input buffer, and the shell doesn't care which one a keystroke came from.
+That's what makes it testable:
+
+```
+> help
+  help    list commands
+  clear   clear the screen
+  uptime  milliseconds since boot
+  ticks   raw timer tick count
+  echo    print the rest of the line
+  mem     memory stats (nothing to report yet)
+  reboot  reset via the keyboard controller
+  panic   deliberately panic, to see the handler
+> echo hello from the shell
+hello from the shell
+> nosuchcommand
+unknown command: nosuchcommand
+  try 'help'
+```
 
 ### Known issue
 

@@ -139,7 +139,18 @@ fault-test:
 	done
 	@$(MAKE) --no-print-directory clean >/dev/null 2>&1
 
-test: boot-test kernel-test fault-test
+# Drives the shell over COM1, since the whole point of feeding serial into the
+# same input buffer as the keyboard is that a script can type at it.
+shell-test: floppy.img
+	@rm -f bin/shell-test.log
+	@-{ sleep 5; printf 'help\nuptime\necho shell works\n'; sleep 2; } | \
+		timeout 25 $(QEMU) -fda floppy.img -boot a -display none -no-reboot \
+			-serial stdio -monitor none > bin/shell-test.log 2>&1 || true
+	@grep -q "shell works" bin/shell-test.log \
+		&& echo "shell-test: PASS" \
+		|| { echo "shell-test: FAIL"; cat bin/shell-test.log 2>/dev/null; exit 1; }
+
+test: boot-test kernel-test fault-test shell-test
 
 clean:
 	rm -rf bin build floppy.img
