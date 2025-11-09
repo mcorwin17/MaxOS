@@ -24,7 +24,9 @@ It's early. No interrupts, no keyboard, no memory management, no filesystem.
 | PS/2 keyboard | **works**, IRQ1 |
 | Serial console input | **works**, IRQ4 |
 | Shell | **works**, 8 commands |
-| Memory management | todo |
+| E820 memory map | **works** |
+| Physical frame allocator | **works**, bitmap, self-tested |
+| Paging / virtual memory | todo |
 | Filesystem | todo |
 
 `make test` is what backs the "works" rows. Two checks, both over serial so
@@ -130,11 +132,22 @@ docs/
 
 | | |
 |---|---|
+| E820 map from the BIOS | `0x500` – `0x804` |
+| Kernel | `0x1000`, up to 48 sectors (24 KB) |
 | Bootloader | `0x7C00` – `0x7DFF` |
-| Kernel | `0x1000`, up to 32 sectors |
 | Stack (real mode) | `0x9000`, grows down |
+| PMM bitmap | `0x100000` |
 | Stack (protected mode) | `0x90000`, grows down |
 | VGA text buffer | `0xB8000` |
+
+The bitmap sits at 1 MB rather than straight after the kernel, which is the
+tidier-looking option and a trap: `kernel_end` is around `0x7000`, so a few KB
+of bitmap runs directly over the boot sector at `0x7C00` — and the GDT lives
+in there. The CPU re-reads the GDT on every segment register load, so the
+first interrupt after `sti` faults on a descriptor table made of bitmap.
+
+The kernel installs its own GDT at startup for the same reason: the
+bootloader's is in memory the kernel is entitled to reuse.
 
 ## Reading
 

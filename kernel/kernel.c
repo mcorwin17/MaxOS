@@ -17,6 +17,8 @@
 #include "kbd.h"
 #include "console.h"
 #include "shell.h"
+#include "pmm.h"
+#include "gdt.h"
 
 /* VGA text mode */
 #define VIDEO_MEMORY_ADDRESS    0xB8000
@@ -112,9 +114,17 @@ void system_initialize(void) {
     serial_initialize();
     kprintf("\nMaxOS 0.1\n");
 
+    /* First, so we stop running on the bootloader's descriptors. */
+    gdt_initialize();
+    kprintf("gdt: kernel descriptors loaded\n");
+
     idt_initialize();
     kprintf("idt: exceptions + IRQs installed, PIC remapped to 0x%02x\n",
             PIC_VECTOR_BASE);
+
+    pmm_dump_map();
+    pmm_initialize();
+    pmm_selftest();
 
     pit_initialize(PIT_FREQUENCY_HZ);
     kprintf("pit: %uHz on IRQ0\n", PIT_FREQUENCY_HZ);

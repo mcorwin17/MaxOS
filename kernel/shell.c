@@ -8,6 +8,7 @@
 #include "pit.h"
 #include "panic.h"
 #include "io.h"
+#include "pmm.h"
 
 #define LINE_MAX 128
 
@@ -56,7 +57,7 @@ static const struct command commands[] = {
     { "uptime", cmd_uptime, "milliseconds since boot" },
     { "ticks",  cmd_ticks,  "raw timer tick count" },
     { "echo",   cmd_echo,   "print the rest of the line" },
-    { "mem",    cmd_mem,    "memory stats (nothing to report yet)" },
+    { "mem",    cmd_mem,    "physical frame usage" },
     { "reboot", cmd_reboot, "reset via the keyboard controller" },
     { "panic",  cmd_panic,  "deliberately panic, to see the handler" },
 };
@@ -121,9 +122,29 @@ static void cmd_echo(const char* args) {
 
 static void cmd_mem(const char* args) {
     (void)args;
-    /* Deliberately honest: there's no physical allocator, so there is nothing
-     * true to print here yet. */
-    console_write("no memory manager yet\n");
+
+    uint32_t total = pmm_total_frames();
+    uint32_t free  = pmm_free_frames();
+
+    console_write("  total   ");
+    write_number(total);
+    console_write(" frames (");
+    write_number(total / 256);          /* 256 frames to the megabyte */
+    console_write(" MB addressable)\n");
+
+    console_write("  free    ");
+    write_number(free);
+    console_write(" frames (");
+    write_number(free / 256);
+    console_write(" MB)\n");
+
+    console_write("  used    ");
+    write_number(total - free);
+    console_write(" frames\n");
+
+    console_write("  usable  ");
+    write_number(pmm_usable_bytes() / (1024 * 1024));
+    console_write(" MB reported by the BIOS\n");
 }
 
 static void cmd_reboot(const char* args) {
