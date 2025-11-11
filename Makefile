@@ -120,11 +120,13 @@ kernel-test: floppy.img
 	@echo "kernel-test: PASS"
 
 # Deliberately fault and check the handler says so instead of resetting.
-# Covers both stub shapes: 0 and 6 push a dummy error code, 13 gets a real one
-# from the CPU. If those two paths disagree the frame is misaligned and every
-# register in the dump is wrong.
+# Covers both stub shapes: 0 and 6 push a dummy error code, 13 and 14 get a
+# real one from the CPU. If those two paths disagree the frame is misaligned
+# and every register in the dump is wrong.
+# 14 only became possible once paging was on - before that a wild pointer just
+# wrote to whatever physical memory was at that address.
 fault-test:
-	@for v in 0 6 13; do \
+	@for v in 0 6 13 14; do \
 		echo "vector $$v:"; \
 		$(MAKE) --no-print-directory clean >/dev/null 2>&1; \
 		$(MAKE) --no-print-directory CFLAGS_EXTRA=-DTEST_FAULT=$$v floppy.img >/dev/null || exit 1; \

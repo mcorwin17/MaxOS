@@ -26,7 +26,8 @@ It's early. No interrupts, no keyboard, no memory management, no filesystem.
 | Shell | **works**, 8 commands |
 | E820 memory map | **works** |
 | Physical frame allocator | **works**, bitmap, self-tested |
-| Paging / virtual memory | todo |
+| Paging, `vmm_map`/`unmap` | **works**, identity mapped |
+| Kernel heap | todo |
 | Filesystem | todo |
 
 `make test` is what backs the "works" rows. Two checks, both over serial so
@@ -44,10 +45,27 @@ pit: 100Hz on IRQ0
 interrupts enabled
 timer: 50 ticks over a 500ms sleep, uptime 1010ms
 ```
-- **`make fault-test`** deliberately faults on vectors 0, 6 and 13 and checks
-  each one is *reported* rather than triple-faulting. 0 and 6 use the dummy
-  error code path, 13 gets a real one from the CPU, so it exercises both stub
-  shapes. A general protection fault looks like:
+- **`make fault-test`** deliberately faults on vectors 0, 6, 13 and 14 and
+  checks each one is *reported* rather than triple-faulting. 0 and 6 use the
+  dummy error code path, 13 and 14 get a real one from the CPU, so it
+  exercises both stub shapes. A page fault looks like:
+
+```
+=== exception 14: page fault ===
+  page not present, on a write, from kernel mode
+
+*** PANIC ***
+page fault
+vector 14  error 0x00000002
+eip 0x00001bc0  cs 0x0008  eflags 0x00010206
+cr2 0x40000000  (faulting address)
+backtrace:
+  [0] 0x000011c6
+  [1] 0x00001008
+halted.
+```
+
+  A general protection fault looks like:
 
 ```
 === exception 13: general protection fault ===

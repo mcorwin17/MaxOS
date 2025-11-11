@@ -19,6 +19,7 @@
 #include "shell.h"
 #include "pmm.h"
 #include "gdt.h"
+#include "vmm.h"
 
 /* VGA text mode */
 #define VIDEO_MEMORY_ADDRESS    0xB8000
@@ -72,6 +73,11 @@ static void trigger_test_fault(void) {
         "mov $0x50, %%eax\n\t"
         "mov %%eax, %%ds"
         : : : "eax");
+#elif TEST_FAULT == 14
+    kprintf("about to write to an unmapped address\n");
+    /* Only faults now that paging is on. Before that this quietly scribbled
+     * on whatever physical memory happened to be there. */
+    *(volatile uint32_t*)0x40000000 = 1;
 #else
     kprintf("no test for vector %d\n", TEST_FAULT);
 #endif
@@ -125,6 +131,9 @@ void system_initialize(void) {
     pmm_dump_map();
     pmm_initialize();
     pmm_selftest();
+
+    vmm_initialize();
+    vmm_selftest();
 
     pit_initialize(PIT_FREQUENCY_HZ);
     kprintf("pit: %uHz on IRQ0\n", PIT_FREQUENCY_HZ);
