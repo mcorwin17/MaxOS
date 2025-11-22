@@ -20,6 +20,7 @@
 #include "pmm.h"
 #include "gdt.h"
 #include "vmm.h"
+#include "heap.h"
 
 /* VGA text mode */
 #define VIDEO_MEMORY_ADDRESS    0xB8000
@@ -105,6 +106,16 @@ void kernel_main(void) {
     kprintf("BUG: still running after the fault\n");
 #endif
 
+#ifdef TEST_HEAP_OVERFLOW
+    {
+        kprintf("about to write past the end of a heap allocation\n");
+        uint8_t* p = (uint8_t*)kmalloc(16);
+        for (int i = 0; i < 32; ++i) p[i] = 0xAA;   /* 16 bytes too far */
+        kfree(p);                                   /* should trip the footer */
+        kprintf("BUG: canary didn't fire\n");
+    }
+#endif
+
     /* Prove the tick is real rather than trusting that it is. */
     uint32_t before = pit_ticks();
     sleep_ms(500);
@@ -134,6 +145,9 @@ void system_initialize(void) {
 
     vmm_initialize();
     vmm_selftest();
+
+    heap_initialize();
+    heap_selftest();
 
     pit_initialize(PIT_FREQUENCY_HZ);
     kprintf("pit: %uHz on IRQ0\n", PIT_FREQUENCY_HZ);

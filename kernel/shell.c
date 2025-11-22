@@ -9,6 +9,7 @@
 #include "panic.h"
 #include "io.h"
 #include "pmm.h"
+#include "heap.h"
 
 #define LINE_MAX 128
 
@@ -42,6 +43,7 @@ static void cmd_uptime(const char* args);
 static void cmd_ticks(const char* args);
 static void cmd_echo(const char* args);
 static void cmd_mem(const char* args);
+static void cmd_heap(const char* args);
 static void cmd_reboot(const char* args);
 static void cmd_panic(const char* args);
 
@@ -58,6 +60,7 @@ static const struct command commands[] = {
     { "ticks",  cmd_ticks,  "raw timer tick count" },
     { "echo",   cmd_echo,   "print the rest of the line" },
     { "mem",    cmd_mem,    "physical frame usage" },
+    { "heap",   cmd_heap,   "kernel heap usage" },
     { "reboot", cmd_reboot, "reset via the keyboard controller" },
     { "panic",  cmd_panic,  "deliberately panic, to see the handler" },
 };
@@ -145,6 +148,20 @@ static void cmd_mem(const char* args) {
     console_write("  usable  ");
     write_number(pmm_usable_bytes() / (1024 * 1024));
     console_write(" MB reported by the BIOS\n");
+}
+
+static void cmd_heap(const char* args) {
+    (void)args;
+
+    console_write("  size    ");
+    write_number(heap_size() / 1024);
+    console_write(" KB mapped at 0xd0000000\n");
+
+    console_write("  live    ");
+    write_number(heap_live_allocations());
+    console_write(" allocations, ");
+    write_number(heap_live_bytes());
+    console_write(" bytes\n");
 }
 
 static void cmd_reboot(const char* args) {

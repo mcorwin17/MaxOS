@@ -27,7 +27,8 @@ It's early. No interrupts, no keyboard, no memory management, no filesystem.
 | E820 memory map | **works** |
 | Physical frame allocator | **works**, bitmap, self-tested |
 | Paging, `vmm_map`/`unmap` | **works**, identity mapped |
-| Kernel heap | todo |
+| Kernel heap, `kmalloc`/`kfree` | **works**, canaries + coalescing |
+| Threads / scheduling | todo |
 | Filesystem | todo |
 
 `make test` is what backs the "works" rows. Two checks, both over serial so
