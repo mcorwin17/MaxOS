@@ -21,6 +21,7 @@
 #include "gdt.h"
 #include "vmm.h"
 #include "heap.h"
+#include "vma.h"
 
 /* VGA text mode */
 #define VIDEO_MEMORY_ADDRESS    0xB8000
@@ -148,6 +149,9 @@ void system_initialize(void) {
 
     heap_initialize();
     heap_selftest();
+
+    vma_initialize();
+    vma_selftest();
 
     pit_initialize(PIT_FREQUENCY_HZ);
     kprintf("pit: %uHz on IRQ0\n", PIT_FREQUENCY_HZ);

@@ -28,8 +28,17 @@ It's early. No interrupts, no keyboard, no memory management, no filesystem.
 | Physical frame allocator | **works**, bitmap, self-tested |
 | Paging, `vmm_map`/`unmap` | **works**, identity mapped |
 | Kernel heap, `kmalloc`/`kfree` | **works**, canaries + coalescing |
+| Demand paging (VMAs) | **works**, zero-fill on fault |
 | Threads / scheduling | todo |
 | Filesystem | todo |
+
+Reserving address space is separate from backing it. A 16 MB region costs one
+small allocation; frames only appear when a page is touched, via the page
+fault handler consulting the region list. Page tables built to hold those
+mappings are kept rather than freed on unmap — freeing one means scanning all
+1024 entries on every unmap, and they get reused as soon as anything maps into
+the same 4 MB. The selftest accounts for them explicitly rather than tolerating
+the drift.
 
 `make test` is what backs the "works" rows. Two checks, both over serial so
 nothing depends on a human squinting at a QEMU window:

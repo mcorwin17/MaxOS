@@ -10,6 +10,7 @@
 #include "io.h"
 #include "pmm.h"
 #include "heap.h"
+#include "vma.h"
 
 #define LINE_MAX 128
 
@@ -44,6 +45,7 @@ static void cmd_ticks(const char* args);
 static void cmd_echo(const char* args);
 static void cmd_mem(const char* args);
 static void cmd_heap(const char* args);
+static void cmd_vm(const char* args);
 static void cmd_reboot(const char* args);
 static void cmd_panic(const char* args);
 
@@ -61,6 +63,7 @@ static const struct command commands[] = {
     { "echo",   cmd_echo,   "print the rest of the line" },
     { "mem",    cmd_mem,    "physical frame usage" },
     { "heap",   cmd_heap,   "kernel heap usage" },
+    { "vm",     cmd_vm,     "reserved regions and resident pages" },
     { "reboot", cmd_reboot, "reset via the keyboard controller" },
     { "panic",  cmd_panic,  "deliberately panic, to see the handler" },
 };
@@ -162,6 +165,18 @@ static void cmd_heap(const char* args) {
     console_write(" allocations, ");
     write_number(heap_live_bytes());
     console_write(" bytes\n");
+}
+
+static void cmd_vm(const char* args) {
+    (void)args;
+
+    console_write("  regions  ");
+    write_number(vma_region_count());
+    console_putchar('\n');
+
+    console_write("  resident ");
+    write_number(vma_resident_pages());
+    console_write(" pages faulted in on demand\n");
 }
 
 static void cmd_reboot(const char* args) {
