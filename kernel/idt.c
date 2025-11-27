@@ -4,6 +4,7 @@
 #include "panic.h"
 #include "serial.h"
 #include "pic.h"
+#include "vma.h"
 
 #define IDT_ENTRIES     256
 #define KERNEL_CODE_SEG 0x08
@@ -151,6 +152,15 @@ void isr_handler(struct registers* r) {
 
         pic_send_eoi(irq);
         return;
+    }
+
+    /* A page fault inside a reserved region isn't an error, it's the region
+     * being used for the first time. Service it and return without a word. */
+    if (r->vector == 14) {
+        uint32_t cr2;
+        __asm__ volatile("mov %%cr2, %0" : "=r"(cr2));
+
+        if (vma_handle_fault(cr2)) return;
     }
 
     const char* name = (r->vector < 32) ? exception_names[r->vector]
