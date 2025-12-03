@@ -4,8 +4,12 @@
 [org 0x7C00]
 [bits 16]
 
-KERNEL_OFFSET        equ 0x1000
-KERNEL_SECTOR_COUNT  equ 48        ; 24 KB, ends at 0x7000
+; Kernel lives at 0x10000 rather than 0x1000. At 0x1000 it had 24 KB before it
+; reached the boot sector at 0x7C00, which it is still executing out of during
+; the load. From 0x10000 there is clear space all the way up to the stack.
+KERNEL_SEGMENT       equ 0x1000    ; segment, so physical 0x10000
+KERNEL_OFFSET        equ 0x10000   ; the same address, for the jump
+KERNEL_SECTOR_COUNT  equ 192       ; 96 KB
 KERNEL_START_LBA     equ 1         ; LBA 0 is this sector
 STACK_TOP            equ 0x9000
 DISK_RETRY_COUNT     equ 3
@@ -65,9 +69,9 @@ load_kernel:
     mov si, msg_load
     call print_string
 
-    xor ax, ax
+    mov ax, KERNEL_SEGMENT
     mov es, ax
-    mov bx, KERNEL_OFFSET       ; ES:BX destination, walks forward
+    xor bx, bx                  ; ES:BX destination; ES walks, BX stays 0
     mov si, KERNEL_START_LBA    ; current LBA
     mov di, KERNEL_SECTOR_COUNT ; sectors left
 
@@ -113,7 +117,13 @@ load_kernel:
 
 .advance:
     inc si
-    add bx, 512                 ; 48 sectors keeps this under 64K, no wrap
+
+    ; Advance the segment by 512 bytes rather than bx, which would wrap at
+    ; 64 KB and start writing over the beginning of the kernel.
+    mov ax, es
+    add ax, 512 / 16
+    mov es, ax
+
     dec di
     jnz .sector
 

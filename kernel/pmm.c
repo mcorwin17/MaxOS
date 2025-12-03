@@ -158,7 +158,7 @@ void pmm_initialize(void) {
      * everything below 1M (BIOS, video, the E820 map itself), the kernel, and
      * the bitmap. */
     reserve_range(0, 0x100000);
-    reserve_range(0x1000, (uint32_t)(uintptr_t)kernel_end);
+    reserve_range(0x10000, (uint32_t)(uintptr_t)kernel_end);
     reserve_range(bitmap_addr, bitmap_addr + bitmap_words * 4);
 
     kprintf("pmm: %u frames, %u free, bitmap %u bytes at 0x%08x\n",
