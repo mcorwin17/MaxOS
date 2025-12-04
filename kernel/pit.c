@@ -5,6 +5,7 @@
 #include "idt.h"
 #include "io.h"
 #include "panic.h"
+#include "thread.h"
 
 #define PIT_CHANNEL0   0x40
 #define PIT_COMMAND    0x43
@@ -17,11 +18,20 @@
 static volatile uint32_t ticks = 0;
 static uint32_t tick_hz = PIT_FREQUENCY_HZ;
 
+/* The timer runs long before there's a scheduler to drive. */
+static int threads_running = 0;
+
+void pit_enable_preemption(void) {
+    threads_running = 1;
+}
+
 /* Runs in interrupt context: no blocking, no allocating, nothing that takes a
  * lock the rest of the kernel holds. Bump the counter and get out. */
 static void pit_on_tick(struct registers* r) {
     (void)r;
     ticks++;
+
+    if (threads_running) thread_tick(ticks);
 }
 
 void pit_initialize(uint32_t frequency_hz) {

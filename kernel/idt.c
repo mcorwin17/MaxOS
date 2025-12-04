@@ -5,6 +5,7 @@
 #include "serial.h"
 #include "pic.h"
 #include "vma.h"
+#include "thread.h"
 
 #define IDT_ENTRIES     256
 #define KERNEL_CODE_SEG 0x08
@@ -151,6 +152,11 @@ void isr_handler(struct registers* r) {
         if (irq_handlers[irq]) irq_handlers[irq](r);
 
         pic_send_eoi(irq);
+
+        /* Only after EOI. Switching away mid-handler leaves the interrupt
+         * unacknowledged, and the PIC delivers nothing more until this thread
+         * is scheduled again - which needs a timer tick that can't arrive. */
+        if (thread_take_resched()) schedule();
         return;
     }
 

@@ -22,6 +22,7 @@
 #include "vmm.h"
 #include "heap.h"
 #include "vma.h"
+#include "thread.h"
 
 /* VGA text mode */
 #define VIDEO_MEMORY_ADDRESS    0xB8000
@@ -153,6 +154,9 @@ void system_initialize(void) {
     vma_initialize();
     vma_selftest();
 
+    thread_initialize();
+    thread_start_idle();
+
     pit_initialize(PIT_FREQUENCY_HZ);
     kprintf("pit: %uHz on IRQ0\n", PIT_FREQUENCY_HZ);
 
@@ -164,6 +168,11 @@ void system_initialize(void) {
 
     __asm__ volatile("sti");
     kprintf("interrupts enabled\n");
+
+    /* Scheduler only starts driving off the tick once there are threads to
+     * schedule and interrupts to deliver the tick. */
+    pit_enable_preemption();
+    thread_selftest();
 
     clear_screen();
     set_cursor_position(0, 0);

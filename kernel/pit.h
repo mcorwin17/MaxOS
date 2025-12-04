@@ -15,4 +15,7 @@ uint32_t pit_uptime_ms(void);
  * cli set this never returns. */
 void sleep_ms(uint32_t ms);
 
+/* Start driving the scheduler from the tick. Off until threads exist. */
+void pit_enable_preemption(void);
+
 #endif
