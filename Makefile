@@ -152,6 +152,35 @@ shell-test: floppy.img
 		&& echo "shell-test: PASS" \
 		|| { echo "shell-test: FAIL"; cat bin/shell-test.log 2>/dev/null; exit 1; }
 
+# Runs the shared counter test twice: once locked, which has to come out
+# exact, and once deliberately unlocked, which has to not. A lock that passes
+# both ways isn't holding anything - and the first version of this passed both
+# ways, because the workers finished inside one 10ms tick and were never
+# preempted at all.
+lock-test:
+	@$(MAKE) --no-print-directory clean >/dev/null 2>&1
+	@$(MAKE) --no-print-directory floppy.img >/dev/null || exit 1
+	@rm -f bin/lock.log
+	@-timeout 40 $(QEMU) -fda floppy.img -boot a -display none -no-reboot \
+		-serial file:bin/lock.log >/dev/null 2>&1 || true
+	@grep -q "thread: selftest ok" bin/lock.log \
+		|| { echo "lock-test: FAIL, locked run lost increments"; \
+		     grep "thread:" bin/lock.log 2>/dev/null; exit 1; }
+	@$(MAKE) --no-print-directory clean >/dev/null 2>&1
+	@$(MAKE) --no-print-directory CFLAGS_EXTRA=-DTEST_NO_LOCK=1 floppy.img >/dev/null || exit 1
+	@rm -f bin/nolock.log
+	@-timeout 40 $(QEMU) -fda floppy.img -boot a -display none -no-reboot \
+		-serial file:bin/nolock.log >/dev/null 2>&1 || true
+	@grep -q "NO LOCK" bin/nolock.log \
+		|| { echo "lock-test: FAIL, unlocked run never reported"; exit 1; }
+	@if grep -q "lost 0 increments" bin/nolock.log; then \
+		echo "lock-test: FAIL, unlocked run lost nothing - the race window is"; \
+		echo "  too narrow to prove the lock does anything"; exit 1; \
+	fi
+	@grep "NO LOCK" bin/nolock.log
+	@echo "lock-test: PASS"
+	@$(MAKE) --no-print-directory clean >/dev/null 2>&1
+
 test: boot-test kernel-test fault-test shell-test
 
 clean:

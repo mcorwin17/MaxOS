@@ -11,6 +11,7 @@
 #include "pmm.h"
 #include "heap.h"
 #include "vma.h"
+#include "thread.h"
 
 #define LINE_MAX 128
 
@@ -46,6 +47,8 @@ static void cmd_echo(const char* args);
 static void cmd_mem(const char* args);
 static void cmd_heap(const char* args);
 static void cmd_vm(const char* args);
+static void cmd_ps(const char* args);
+static void cmd_sleep(const char* args);
 static void cmd_reboot(const char* args);
 static void cmd_panic(const char* args);
 
@@ -64,6 +67,8 @@ static const struct command commands[] = {
     { "mem",    cmd_mem,    "physical frame usage" },
     { "heap",   cmd_heap,   "kernel heap usage" },
     { "vm",     cmd_vm,     "reserved regions and resident pages" },
+    { "ps",     cmd_ps,     "list threads" },
+    { "sleep",  cmd_sleep,  "block this thread for N ms" },
     { "reboot", cmd_reboot, "reset via the keyboard controller" },
     { "panic",  cmd_panic,  "deliberately panic, to see the handler" },
 };
@@ -177,6 +182,33 @@ static void cmd_vm(const char* args) {
     console_write("  resident ");
     write_number(vma_resident_pages());
     console_write(" pages faulted in on demand\n");
+}
+
+static void cmd_ps(const char* args) {
+    (void)args;
+    console_write("  id name             state    ticks\n");
+    thread_dump_console();
+}
+
+static uint32_t parse_number(const char* s) {
+    uint32_t n = 0;
+    while (*s >= '0' && *s <= '9') { n = n * 10 + (uint32_t)(*s - '0'); ++s; }
+    return n;
+}
+
+static void cmd_sleep(const char* args) {
+    uint32_t ms = parse_number(args);
+    if (ms == 0) ms = 1000;
+
+    uint32_t before = pit_uptime_ms();
+    thread_sleep_ms(ms);
+    uint32_t after = pit_uptime_ms();
+
+    console_write("  slept ");
+    write_number(after - before);
+    console_write("ms of ");
+    write_number(ms);
+    console_write("ms requested\n");
 }
 
 static void cmd_reboot(const char* args) {

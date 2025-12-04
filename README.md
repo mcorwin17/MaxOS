@@ -29,7 +29,9 @@ It's early. No interrupts, no keyboard, no memory management, no filesystem.
 | Paging, `vmm_map`/`unmap` | **works**, identity mapped |
 | Kernel heap, `kmalloc`/`kfree` | **works**, canaries + coalescing |
 | Demand paging (VMAs) | **works**, zero-fill on fault |
-| Threads / scheduling | todo |
+| Threads, preemptive scheduler | **works**, round robin at 100 Hz |
+| Spinlocks, blocking sleep | **works** |
+| User mode (ring 3) | todo |
 | Filesystem | todo |
 
 Reserving address space is separate from backing it. A 16 MB region costs one
@@ -92,6 +94,20 @@ halted.
 ```
 
 - **`make shell-test`** types at the shell over COM1 and checks it answers.
+- **`make lock-test`** runs four threads incrementing a shared counter, once
+  with the spinlock and once deliberately without, and requires the two to
+  disagree:
+
+```
+thread: selftest ok, 4 threads x 200 increments = 800
+thread: NO LOCK, counter is 578, expected 800, lost 222 increments
+```
+
+  The unlocked run losing nothing is a *failure*, because it means the race
+  window is too narrow to prove the lock does anything. The first version of
+  this test passed both ways — all four workers finished inside a single 10 ms
+  tick and were never preempted at all. `ps` showing `ticks=0` against every
+  worker is what gave it away.
 
 Serial is deliberately the primary channel, in both directions. VGA text is
 nice to look at but can't be read from outside the VM, and a keyboard can't be
