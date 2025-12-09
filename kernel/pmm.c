@@ -4,6 +4,7 @@
 #include "pmm.h"
 #include "serial.h"
 #include "panic.h"
+#include "spinlock.h"
 
 /* Where the bootloader left the BIOS map. Must match boot.asm. */
 #define E820_COUNT_ADDR    0x500
@@ -26,6 +27,12 @@ static uint32_t  bitmap_words;
 static uint32_t  total_frames;
 static uint32_t  free_frames;
 static uint32_t  usable_bytes;
+
+/* One byte per frame, right after the bitmap. Only fork shares frames, so a
+ * byte (255 owners) is plenty. */
+static uint8_t*  refcounts;
+
+static struct spinlock pmm_lock;
 
 static inline void mark_used(uint32_t frame) {
     uint32_t word = frame / 32, bit = frame % 32;
@@ -120,15 +127,21 @@ void pmm_initialize(void) {
 
     /* Bitmap goes at 1M, not straight after the kernel.
      *
-     * Putting it at kernel_end looks tidier and is a trap: kernel_end is
-     * around 0x7000, the bitmap is a few KB, and it runs straight over the
-     * boot sector at 0x7C00 - which is where the GDT still lives. The CPU
-     * re-reads the GDT on every segment register load, and isr_common reloads
-     * DS on every single interrupt, so the first timer tick after sti faults
-     * on a descriptor table made of bitmap. Everything below 1M is either
-     * taken or too close to something that is. */
+     * Putting it at kernel_end looks tidier and is a trap: kernel_end used to
+     * be around 0x7000, the bitmap is a few KB, and it ran straight over the
+     * boot sector at 0x7C00 - which is where the GDT lived at the time. The
+     * CPU re-reads the GDT on every segment register load, and isr_common
+     * reloads DS on every single interrupt, so the first timer tick after sti
+     * faulted on a descriptor table made of bitmap. Everything below 1M is
+     * either taken or too close to something that is. */
     uint32_t bitmap_addr = 0x100000;
     bitmap = (uint32_t*)(uintptr_t)bitmap_addr;
+
+    /* Refcounts live on the page after the bitmap. */
+    refcounts = (uint8_t*)(uintptr_t)(bitmap_addr + 0x1000);
+    for (uint32_t i = 0; i < total_frames; ++i) refcounts[i] = 0;
+
+    spin_init(&pmm_lock, "pmm");
 
     /* Start with everything used, then punch out what the BIOS says is real.
      * Safer than the other way round: a region nobody told us about stays
@@ -159,13 +172,15 @@ void pmm_initialize(void) {
      * the bitmap. */
     reserve_range(0, 0x100000);
     reserve_range(0x10000, (uint32_t)(uintptr_t)kernel_end);
-    reserve_range(bitmap_addr, bitmap_addr + bitmap_words * 4);
+    reserve_range(bitmap_addr, bitmap_addr + 0x1000 + total_frames);
 
     kprintf("pmm: %u frames, %u free, bitmap %u bytes at 0x%08x\n",
             total_frames, free_frames, bitmap_words * 4, bitmap_addr);
 }
 
 uint32_t pmm_alloc_frame(void) {
+    uint32_t flags = spin_lock_irq(&pmm_lock);
+
     for (uint32_t word = 0; word < bitmap_words; ++word) {
         if (bitmap[word] == 0xFFFFFFFF) continue;   /* all taken, skip 32 */
 
@@ -173,13 +188,16 @@ uint32_t pmm_alloc_frame(void) {
             if (bitmap[word] & (1u << bit)) continue;
 
             uint32_t frame = word * 32 + bit;
-            if (frame >= total_frames) return PMM_NO_FRAME;
+            if (frame >= total_frames) break;
 
             mark_used(frame);
+            refcounts[frame] = 1;
+            spin_unlock_irq(&pmm_lock, flags);
             return frame * PAGE_SIZE;
         }
     }
 
+    spin_unlock_irq(&pmm_lock, flags);
     return PMM_NO_FRAME;
 }
 
@@ -193,7 +211,39 @@ void pmm_free_frame(uint32_t addr) {
         panic("pmm_free_frame: double free");
     }
 
+    uint32_t flags = spin_lock_irq(&pmm_lock);
+
+    /* Shared frame: just drop this claim. */
+    if (refcounts[frame] > 1) {
+        refcounts[frame]--;
+        spin_unlock_irq(&pmm_lock, flags);
+        return;
+    }
+
+    refcounts[frame] = 0;
     mark_free(frame);
+    spin_unlock_irq(&pmm_lock, flags);
+}
+
+void pmm_ref(uint32_t addr) {
+    uint32_t frame = addr / PAGE_SIZE;
+
+    if (frame >= total_frames || !is_used(frame)) {
+        panic("pmm_ref: frame isn't allocated");
+    }
+    if (refcounts[frame] == 0xFF) {
+        panic("pmm_ref: refcount overflow");
+    }
+
+    uint32_t flags = spin_lock_irq(&pmm_lock);
+    refcounts[frame]++;
+    spin_unlock_irq(&pmm_lock, flags);
+}
+
+uint32_t pmm_refcount(uint32_t addr) {
+    uint32_t frame = addr / PAGE_SIZE;
+    if (frame >= total_frames) return 0;
+    return refcounts[frame];
 }
 
 #define SELFTEST_COUNT 1024

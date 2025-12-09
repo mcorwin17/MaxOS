@@ -6,6 +6,13 @@
 #include "vmm.h"
 #include "serial.h"
 #include "panic.h"
+#include "spinlock.h"
+
+/* Syscalls run with interrupts on and can be preempted, so two threads can
+ * be inside the allocator at once now. The discipline from the keyboard
+ * driver days - IRQ handlers never allocate - is what keeps this lock from
+ * being a deadlock instead of a fix. */
+static struct spinlock heap_lock;
 
 /* Canaries either side of every allocation. A heap overflow caught on the
  * next free costs an hour; the same overflow found three weeks later costs a
@@ -76,6 +83,7 @@ static void check_canaries(struct block* b, const char* where) {
 }
 
 void heap_initialize(void) {
+    spin_init(&heap_lock, "heap");
     heap_end = HEAP_BASE;
 
     if (!heap_grow(HEAP_INITIAL)) {
@@ -117,6 +125,8 @@ static void split(struct block* b, size_t wanted) {
 void* kmalloc(size_t bytes) {
     if (bytes == 0) return 0;
 
+    uint32_t irq = spin_lock_irq(&heap_lock);
+
     size_t wanted = ALIGN_UP(bytes);
 
     struct block* b = first_block;
@@ -131,6 +141,7 @@ void* kmalloc(size_t bytes) {
 
             live_allocations++;
             live_bytes += b->size;
+            spin_unlock_irq(&heap_lock, irq);
             return PAYLOAD(b);
         }
 
@@ -141,7 +152,10 @@ void* kmalloc(size_t bytes) {
     /* Nothing big enough. Grow, hang a new block off the end, and retry
      * through the same path so splitting and accounting stay in one place. */
     uint32_t previous_end = heap_end;
-    if (!heap_grow(TOTAL(wanted))) return 0;
+    if (!heap_grow(TOTAL(wanted))) {
+        spin_unlock_irq(&heap_lock, irq);
+        return 0;
+    }
 
     struct block* fresh = (struct block*)previous_end;
     fresh->size = (heap_end - previous_end) - TOTAL(0);
@@ -156,6 +170,7 @@ void* kmalloc(size_t bytes) {
 
     live_allocations++;
     live_bytes += fresh->size;
+    spin_unlock_irq(&heap_lock, irq);
     return PAYLOAD(fresh);
 }
 
@@ -181,12 +196,16 @@ void kfree(void* ptr) {
 
     if (b->free) panic("kfree: double free");
 
+    uint32_t irq = spin_lock_irq(&heap_lock);
+
     b->free = 1;
     live_allocations--;
     live_bytes -= b->size;
 
     coalesce_forward(b);
     if (b->prev) coalesce_forward(b->prev);
+
+    spin_unlock_irq(&heap_lock, irq);
 }
 
 #define TEST_N 64

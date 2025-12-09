@@ -15,6 +15,12 @@ void pmm_initialize(void);
 uint32_t pmm_alloc_frame(void);
 void     pmm_free_frame(uint32_t addr);
 
+/* Sharing for copy-on-write. A frame starts at count 1 when allocated;
+ * pmm_ref bumps it, pmm_free_frame decrements and only really frees at
+ * zero. So "free" always means "drop my claim", shared or not. */
+void     pmm_ref(uint32_t addr);
+uint32_t pmm_refcount(uint32_t addr);
+
 uint32_t pmm_total_frames(void);
 uint32_t pmm_free_frames(void);
 uint32_t pmm_usable_bytes(void);
