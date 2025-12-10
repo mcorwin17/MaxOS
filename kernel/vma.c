@@ -1,4 +1,5 @@
 #include <stdint.h>
+#include <stddef.h>
 
 #include "vma.h"
 #include "vmm.h"
@@ -7,29 +8,37 @@
 #include "serial.h"
 #include "panic.h"
 
-struct vma {
-    uint32_t    start;
-    uint32_t    end;        /* exclusive */
-    uint32_t    flags;
-    struct vma* next;
-};
+static struct addrspace  kernel_as;
+static struct addrspace* active;
 
-static struct vma* regions;
-static uint32_t    resident_pages;
+/* Page fault error code bits. */
+#define PF_PRESENT 0x1
+#define PF_WRITE   0x2
 
 void vma_initialize(void) {
-    regions = 0;
-    resident_pages = 0;
+    vma_as_init(&kernel_as, vmm_kernel_directory());
+    active = &kernel_as;
 }
 
-static struct vma* find(uint32_t addr) {
-    for (struct vma* v = regions; v; v = v->next) {
+struct addrspace* vma_kernel_space(void) { return &kernel_as; }
+struct addrspace* vma_active(void)       { return active; }
+void vma_set_active(struct addrspace* as) { active = as ? as : &kernel_as; }
+
+void vma_as_init(struct addrspace* as, uint32_t pd) {
+    as->pd       = pd;
+    as->regions  = 0;
+    as->resident = 0;
+}
+
+static struct vma* find(struct addrspace* as, uint32_t addr) {
+    for (struct vma* v = as->regions; v; v = v->next) {
         if (addr >= v->start && addr < v->end) return v;
     }
     return 0;
 }
 
-int vma_reserve(uint32_t start, uint32_t size, uint32_t flags) {
+int vma_reserve_in(struct addrspace* as, uint32_t start, uint32_t size,
+                   uint32_t flags) {
     if ((start | size) & (PAGE_SIZE - 1)) {
         panic("vma_reserve: unaligned region");
     }
@@ -38,7 +47,7 @@ int vma_reserve(uint32_t start, uint32_t size, uint32_t flags) {
 
     /* Overlapping regions would make the fault handler's answer depend on
      * list order, which is a bug waiting to be blamed on something else. */
-    for (struct vma* v = regions; v; v = v->next) {
+    for (struct vma* v = as->regions; v; v = v->next) {
         if (start < v->end && end > v->start) return 0;
     }
 
@@ -48,47 +57,135 @@ int vma_reserve(uint32_t start, uint32_t size, uint32_t flags) {
     v->start = start;
     v->end   = end;
     v->flags = flags;
-    v->next  = regions;
-    regions  = v;
+    v->next  = as->regions;
+    as->regions = v;
 
     return 1;
 }
 
-void vma_release(uint32_t start) {
-    struct vma** link = &regions;
+static void release_region(struct addrspace* as, struct vma* v) {
+    for (uint32_t addr = v->start; addr < v->end; addr += PAGE_SIZE) {
+        uint32_t phys = vmm_get_physical_in(as->pd, addr);
+        if (!phys) continue;
+
+        vmm_unmap_in(as->pd, addr);
+        pmm_free_frame(phys & ~(PAGE_SIZE - 1));
+        as->resident--;
+    }
+}
+
+void vma_release_in(struct addrspace* as, uint32_t start) {
+    struct vma** link = &as->regions;
 
     while (*link && (*link)->start != start) link = &(*link)->next;
     if (!*link) return;
 
     struct vma* v = *link;
-
-    for (uint32_t addr = v->start; addr < v->end; addr += PAGE_SIZE) {
-        uint32_t phys = vmm_get_physical(addr);
-        if (!phys) continue;
-
-        vmm_unmap(addr);
-        pmm_free_frame(phys & ~(PAGE_SIZE - 1));
-        resident_pages--;
-    }
+    release_region(as, v);
 
     *link = v->next;
     kfree(v);
 }
 
-/* Runs in interrupt context, from the page fault handler. Allocating is fine
- * here today because nothing takes a lock yet; once there's a scheduler this
- * needs revisiting, because a fault handler that blocks on an allocator some
- * thread already holds is a deadlock. */
-int vma_handle_fault(uint32_t addr) {
-    struct vma* v = find(addr);
+void vma_release_all(struct addrspace* as) {
+    while (as->regions) {
+        struct vma* v = as->regions;
+        release_region(as, v);
+        as->regions = v->next;
+        kfree(v);
+    }
+}
+
+int vma_clone(struct addrspace* dst, struct addrspace* src) {
+    for (struct vma* v = src->regions; v; v = v->next) {
+        if (!vma_reserve_in(dst, v->start, v->end - v->start, v->flags)) {
+            return 0;
+        }
+
+        for (uint32_t addr = v->start; addr < v->end; addr += PAGE_SIZE) {
+            uint32_t phys = vmm_get_physical_in(src->pd, addr);
+            if (!phys) continue;            /* never touched, stays lazy */
+
+            uint32_t frame = phys & ~(PAGE_SIZE - 1);
+
+            /* Share the frame, strip the write bit from BOTH sides. The
+             * next write from either becomes a fault, and the fault makes
+             * the private copy. Order matters: refcount up before the
+             * parent loses write, so a racing fault sees a shared frame. */
+            pmm_ref(frame);
+
+            uint32_t ro = (v->flags & VMA_USER) ? PAGE_USER : 0;
+            vmm_map_in(dst->pd, addr, frame, ro);
+            vmm_set_flags_in(src->pd, addr, ro);
+
+            dst->resident++;
+        }
+    }
+
+    return 1;
+}
+
+int vma_user_range_ok(struct addrspace* as, uint32_t addr, uint32_t len) {
+    if (len == 0) return 1;
+
+    uint32_t end = addr + len;
+    if (end < addr) return 0;               /* wrapped */
+
+    /* Every byte must land in a user region. Walk region by region rather
+     * than page by page so a range spanning two adjacent regions passes. */
+    uint32_t at = addr;
+    while (at < end) {
+        struct vma* v = find(as, at);
+        if (!v || !(v->flags & VMA_USER)) return 0;
+
+        at = v->end;
+    }
+
+    return 1;
+}
+
+int vma_handle_fault(uint32_t addr, uint32_t error_code) {
+    struct addrspace* as = active;
+
+    struct vma* v = find(as, addr);
     if (!v) return 0;
 
     uint32_t page = addr & ~(PAGE_SIZE - 1);
 
-    /* Already mapped means this is a permission problem, not a missing page,
-     * and we have nothing to say about it yet. */
-    if (vmm_is_mapped(page)) return 0;
+    /* Write to a present page: only legitimate if this is copy-on-write,
+     * meaning the region says writable but the mapping says not. */
+    if (error_code & PF_PRESENT) {
+        if (!(error_code & PF_WRITE)) return 0;
+        if (!(v->flags & VMA_WRITE))  return 0;
 
+        uint32_t phys  = vmm_get_physical_in(as->pd, page);
+        if (!phys) return 0;
+        uint32_t frame = phys & ~(PAGE_SIZE - 1);
+
+        uint32_t flags = PAGE_WRITE;
+        if (v->flags & VMA_USER) flags |= PAGE_USER;
+
+        if (pmm_refcount(frame) > 1) {
+            /* Shared: make a private copy. Both frames are identity mapped,
+             * so the copy is a plain loop regardless of whose CR3 this is. */
+            uint32_t copy = pmm_alloc_frame();
+            if (copy == PMM_NO_FRAME) return 0;
+
+            const uint32_t* from = (const uint32_t*)(uintptr_t)frame;
+            uint32_t*       to   = (uint32_t*)(uintptr_t)copy;
+            for (uint32_t i = 0; i < PAGE_SIZE / 4; ++i) to[i] = from[i];
+
+            vmm_map_in(as->pd, page, copy, flags);
+            pmm_free_frame(frame);          /* drop our claim on the shared one */
+        } else {
+            /* Last owner standing: just give the write bit back. */
+            vmm_set_flags_in(as->pd, page, flags);
+        }
+
+        return 1;
+    }
+
+    /* Not present: demand paging. */
     uint32_t frame = pmm_alloc_frame();
     if (frame == PMM_NO_FRAME) return 0;
 
@@ -96,22 +193,27 @@ int vma_handle_fault(uint32_t addr) {
     if (v->flags & VMA_WRITE) flags |= PAGE_WRITE;
     if (v->flags & VMA_USER)  flags |= PAGE_USER;
 
-    vmm_map(page, frame, flags);
+    vmm_map_in(as->pd, page, frame, flags);
 
-    /* Anonymous memory has to read back as zero, or a process gets whatever
-     * the last owner of that frame left behind. */
-    volatile uint32_t* p = (volatile uint32_t*)page;
+    /* Zero through the identity mapping: it's always mapped, and anonymous
+     * memory must not hand out whatever the frame's last owner left. */
+    uint32_t* p = (uint32_t*)(uintptr_t)frame;
     for (uint32_t i = 0; i < PAGE_SIZE / 4; ++i) p[i] = 0;
 
-    resident_pages++;
+    as->resident++;
     return 1;
 }
 
-uint32_t vma_resident_pages(void) { return resident_pages; }
+/* Kernel-space wrappers. */
+int vma_reserve(uint32_t start, uint32_t size, uint32_t flags) {
+    return vma_reserve_in(&kernel_as, start, size, flags);
+}
+void vma_release(uint32_t start)  { vma_release_in(&kernel_as, start); }
+uint32_t vma_resident_pages(void) { return kernel_as.resident; }
 
 uint32_t vma_region_count(void) {
     uint32_t n = 0;
-    for (struct vma* v = regions; v; v = v->next) ++n;
+    for (struct vma* v = kernel_as.regions; v; v = v->next) ++n;
     return n;
 }
 
@@ -163,13 +265,11 @@ void vma_selftest(void) {
 
     if (vma_resident_pages() != 0) panic("vma selftest: pages still resident");
 
-    /* The four data frames come back. The page tables built to hold their
-     * mappings don't, and that's deliberate: the four pages are spread across
-     * four different 4 MB regions, so each needed its own table. Freeing an
-     * empty page table means scanning all 1024 entries on every unmap, and
-     * they get reused the moment anything maps into the same 4 MB again.
-     * Accounted for here rather than quietly tolerated - if this grows past
-     * one table per region touched, something really is leaking. */
+    /* The data frames come back; the page tables built to hold them are
+     * kept on purpose - freeing an empty table means scanning all 1024
+     * entries on every unmap, and it's reused the moment anything maps into
+     * the same 4 MB. Accounted for, not tolerated: more than one per region
+     * touched means something really leaked. */
     uint32_t frames_after = pmm_free_frames();
     uint32_t retained = after_reserve - frames_after;
 

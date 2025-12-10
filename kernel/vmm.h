@@ -1,5 +1,9 @@
-/* Virtual memory. Two level paging: page directory -> page table -> frame,
- * each table 1024 entries, each page table covering 4 MB. */
+/* Virtual memory. Two level paging: page directory -> page table -> frame.
+ *
+ * There's one kernel directory, and processes each get their own. Kernel
+ * mappings (the identity map and the heap) are shared into every process
+ * directory by copying the PDEs, so they point at the same page tables and
+ * a kernel mapping made through one is visible in all. */
 
 #ifndef VMM_H
 #define VMM_H
@@ -13,18 +17,33 @@
 /* Builds the kernel address space and turns paging on. */
 void vmm_initialize(void);
 
-/* Both addresses must be page aligned. Allocates a page table if the region
- * doesn't have one yet. */
-void vmm_map(uint32_t virt, uint32_t phys, uint32_t flags);
-void vmm_unmap(uint32_t virt);
+uint32_t vmm_kernel_directory(void);
 
-/* Returns 0 if nothing is mapped there. */
+/* New directory with the kernel PDEs copied in. Returns the physical (and,
+ * thanks to the identity map, also virtual) address, or 0. */
+uint32_t vmm_create_directory(void);
+
+/* Frees the directory and any page tables that aren't shared with the
+ * kernel. Frames referenced by leftover PTEs are NOT freed - release the
+ * VMAs first. Never call on the directory currently in CR3. */
+void vmm_destroy_directory(uint32_t pd);
+
+/* Explicit-directory operations. The _in forms work on any directory; the
+ * bare forms are the kernel directory. */
+void     vmm_map_in(uint32_t pd, uint32_t virt, uint32_t phys, uint32_t flags);
+void     vmm_unmap_in(uint32_t pd, uint32_t virt);
+uint32_t vmm_get_physical_in(uint32_t pd, uint32_t virt);
+int      vmm_is_mapped_in(uint32_t pd, uint32_t virt);
+
+/* Rewrites the flag bits of an existing mapping (for copy-on-write's
+ * write-bit games). Panics if nothing is mapped there. */
+void     vmm_set_flags_in(uint32_t pd, uint32_t virt, uint32_t flags);
+
+void     vmm_map(uint32_t virt, uint32_t phys, uint32_t flags);
+void     vmm_unmap(uint32_t virt);
 uint32_t vmm_get_physical(uint32_t virt);
+int      vmm_is_mapped(uint32_t virt);
 
-int vmm_is_mapped(uint32_t virt);
-
-/* Maps a fresh frame somewhere nothing is using, writes through it, checks it
- * reads back, unmaps and checks the frame count comes home. */
 void vmm_selftest(void);
 
 #endif
