@@ -88,6 +88,15 @@ IRQ 13
 IRQ 14
 IRQ 15
 
+; Syscall gate. Same shape as the exceptions that push no error code, so the
+; C side sees one consistent frame for everything.
+ISR_NOERR 128
+
+; The tail of isr_common, split out because a forked child's first run enters
+; here directly: its kernel stack holds a hand-copied registers frame, and
+; this path is what unwinds one of those into an iret.
+global fork_ret
+
 ; By the time we reach the C handler the stack looks exactly like
 ; struct registers in panic.h. Keep the two in step.
 isr_common:
@@ -105,6 +114,7 @@ isr_common:
     call isr_handler
     add esp, 4
 
+fork_ret:
     pop eax                 ; restore data segment
     mov ds, ax
     mov es, ax

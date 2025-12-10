@@ -6,6 +6,8 @@
 #include "pic.h"
 #include "vma.h"
 #include "thread.h"
+#include "syscall.h"
+#include "process.h"
 
 #define IDT_ENTRIES     256
 #define KERNEL_CODE_SEG 0x08
@@ -122,6 +124,14 @@ void idt_initialize(void) {
         idt_set_gate(PIC_VECTOR_BASE + i, (uint32_t)(uintptr_t)irq_stubs[i]);
     }
 
+    /* The syscall gate. Two deliberate differences from every other entry:
+     * DPL 3, or int 0x80 from ring 3 takes a #GP instead of entering the
+     * kernel; and it's a trap gate (0xEF, not 0x8E), so interrupts stay on
+     * and a slow syscall gets preempted like any other kernel code. */
+    extern void isr128(void);
+    idt_set_gate(0x80, (uint32_t)(uintptr_t)isr128);
+    idt[0x80].flags = 0xEF;
+
     __asm__ volatile("lidt %0" : : "m"(idtp));
 }
 
@@ -140,8 +150,13 @@ static void describe_page_fault(uint32_t error_code) {
     if (error_code & 0x10) kprintf("  during an instruction fetch\n");
 }
 
-/* Called from isr_common in isr.asm, for both exceptions and IRQs. */
+/* Called from isr_common in isr.asm, for exceptions, IRQs and syscalls. */
 void isr_handler(struct registers* r) {
+    if (r->vector == 0x80) {
+        syscall_dispatch(r);
+        return;
+    }
+
     if (r->vector >= PIC_VECTOR_BASE && r->vector < PIC_VECTOR_BASE + 16) {
         uint8_t irq = (uint8_t)(r->vector - PIC_VECTOR_BASE);
 
@@ -160,17 +175,30 @@ void isr_handler(struct registers* r) {
         return;
     }
 
-    /* A page fault inside a reserved region isn't an error, it's the region
-     * being used for the first time. Service it and return without a word. */
+    /* A page fault inside a reserved region isn't an error - it's demand
+     * paging or copy-on-write doing their job. Service it silently. */
     if (r->vector == 14) {
         uint32_t cr2;
         __asm__ volatile("mov %%cr2, %0" : "=r"(cr2));
 
-        if (vma_handle_fault(cr2)) return;
+        if (vma_handle_fault(cr2, r->error_code)) return;
     }
 
     const char* name = (r->vector < 32) ? exception_names[r->vector]
                                         : "unknown";
+
+    /* A fault from ring 3 kills the process, not the kernel. The saved cs
+     * carries the privilege level it arrived from. */
+    if ((r->cs & 3) == 3) {
+        kprintf("\n=== user fault: %s ===\n", name);
+        if (r->vector == 14) {
+            describe_page_fault(r->error_code);
+            uint32_t cr2;
+            __asm__ volatile("mov %%cr2, %0" : "=r"(cr2));
+            kprintf("  at 0x%08x, eip 0x%08x\n", cr2, r->eip);
+        }
+        process_kill_current(r->vector);
+    }
 
     kprintf("\n=== exception %u: %s ===\n", r->vector, name);
 
