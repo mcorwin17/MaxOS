@@ -8,8 +8,12 @@
 #include "pit.h"
 #include "spinlock.h"
 #include "console.h"
+#include "gdt.h"
+#include "vma.h"
+#include "process.h"
 
 extern void context_switch(uint32_t* save_esp_here, uint32_t load_esp);
+extern void fork_ret(void);     /* isr.asm: pops a registers frame and irets */
 
 static struct thread* all_threads;      /* every thread, in creation order */
 static struct thread* current;
@@ -57,6 +61,7 @@ void thread_initialize(void) {
     boot->ran_ticks = 0;
     boot->entry     = 0;
     boot->arg       = 0;
+    boot->proc      = 0;            /* process_initialize fills this in */
     boot->next      = 0;
     copy_name(boot->name, "boot");
 
@@ -81,6 +86,7 @@ struct thread* thread_create(const char* name, void (*entry)(void*), void* arg) 
     t->arg       = arg;
     t->wake_tick = 0;
     t->ran_ticks = 0;
+    t->proc      = current ? current->proc : 0;    /* inherit by default */
     copy_name(t->name, name);
 
     /* Hand-build a stack that looks exactly like one context_switch just
@@ -105,6 +111,67 @@ struct thread* thread_create(const char* name, void (*entry)(void*), void* arg) 
     spin_unlock_irq(&queue_lock, flags);
 
     return t;
+}
+
+struct thread* thread_create_forked(const char* name,
+                                    const struct registers* frame) {
+    struct thread* t = (struct thread*)kmalloc(sizeof(struct thread));
+    if (!t) return 0;
+
+    t->stack = (uint32_t*)kmalloc(THREAD_STACK_SIZE);
+    if (!t->stack) { kfree(t); return 0; }
+
+    t->id        = next_id++;
+    t->state     = THREAD_READY;
+    t->entry     = 0;
+    t->arg       = 0;
+    t->wake_tick = 0;
+    t->ran_ticks = 0;
+    t->proc      = 0;               /* caller assigns the child process */
+    copy_name(t->name, name);
+
+    /* Top of the stack gets a copy of the parent's interrupt frame; under
+     * it, a context_switch frame whose return address is fork_ret. First
+     * switch into this thread pops the callee-saved zeros, rets into
+     * fork_ret, which unwinds the interrupt frame and irets straight to
+     * user mode. IF is off until the iret restores the parent's eflags, so
+     * nothing can land on the crafted frame before it's consumed. */
+    uint8_t* top = (uint8_t*)t->stack + THREAD_STACK_SIZE;
+    struct registers* child_frame =
+        (struct registers*)(top - sizeof(struct registers));
+    *child_frame = *frame;
+
+    uint32_t* sp = (uint32_t*)child_frame;
+    *--sp = (uint32_t)(uintptr_t)fork_ret;
+    *--sp = 0;   /* ebx */
+    *--sp = 0;   /* esi */
+    *--sp = 0;   /* edi */
+    *--sp = 0;   /* ebp */
+
+    t->esp = (uint32_t)(uintptr_t)sp;
+
+    uint32_t flags = spin_lock_irq(&queue_lock);
+    t->next = 0;
+    struct thread* last = all_threads;
+    while (last->next) last = last->next;
+    last->next = t;
+    spin_unlock_irq(&queue_lock, flags);
+
+    return t;
+}
+
+void thread_reap(struct thread* t) {
+    if (!t || t == current) panic("thread_reap: bad target");
+    if (t->state != THREAD_DEAD) panic("thread_reap: thread isn't dead");
+
+    uint32_t flags = spin_lock_irq(&queue_lock);
+    struct thread** link = &all_threads;
+    while (*link && *link != t) link = &(*link)->next;
+    if (*link) *link = t->next;
+    spin_unlock_irq(&queue_lock, flags);
+
+    if (t->stack) kfree(t->stack);
+    kfree(t);
 }
 
 /* Round robin over the thread list, starting after the current one. */
@@ -139,6 +206,23 @@ void schedule(void) {
     if (previous->state == THREAD_RUNNING) previous->state = THREAD_READY;
     next->state = THREAD_RUNNING;
     current = next;
+
+    /* Interrupts from ring 3 land on esp0. Must be the incoming thread's
+     * kernel stack, and must be set before anything can arrive from user
+     * mode on this thread. */
+    if (next->stack) {
+        gdt_set_kernel_stack((uint32_t)(uintptr_t)next->stack
+                             + THREAD_STACK_SIZE);
+    }
+
+    /* Different process, different page directory. The kernel half of every
+     * directory is shared, so the stacks and structs this code stands on
+     * don't move when CR3 does. */
+    if (next->proc && previous->proc &&
+        next->proc->as.pd != previous->proc->as.pd) {
+        vma_set_active(&next->proc->as);
+        __asm__ volatile("mov %0, %%cr3" : : "r"(next->proc->as.pd));
+    }
 
     context_switch(&previous->esp, next->esp);
 
@@ -207,6 +291,7 @@ static const char* state_name(enum thread_state s) {
     case THREAD_READY:    return "ready";
     case THREAD_RUNNING:  return "running";
     case THREAD_SLEEPING: return "sleeping";
+    case THREAD_WAITING:  return "waiting";
     case THREAD_DEAD:     return "dead";
     }
     return "?";
@@ -238,6 +323,8 @@ void thread_dump_console(void) {
     for (struct thread* t = all_threads; t; t = t->next) {
         console_write("  ");
         write_decimal(t->id);
+        console_write("  ");
+        if (t->proc) write_decimal(t->proc->pid); else console_putchar('-');
         console_write("  ");
         write_padded(t->name, THREAD_NAME_MAX);
         write_padded(state_name(t->state), 9);

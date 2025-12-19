@@ -8,14 +8,18 @@
 #define THREAD_H
 
 #include <stdint.h>
+#include "panic.h"      /* struct registers, for thread_create_forked */
 
 #define THREAD_NAME_MAX   16
 #define THREAD_STACK_SIZE 8192
 
+struct process;
+
 enum thread_state {
     THREAD_READY,
     THREAD_RUNNING,
-    THREAD_SLEEPING,
+    THREAD_SLEEPING,    /* timer wakes it at wake_tick */
+    THREAD_WAITING,     /* something else wakes it explicitly */
     THREAD_DEAD
 };
 
@@ -34,6 +38,8 @@ struct thread {
     uint32_t  wake_tick;    /* when state is SLEEPING */
     uint32_t  ran_ticks;    /* rough CPU accounting */
 
+    struct process* proc;   /* owning process; kernel threads use process 0 */
+
     char name[THREAD_NAME_MAX];
     struct thread* next;    /* all threads, not just runnable */
 };
@@ -41,6 +47,18 @@ struct thread {
 void thread_initialize(void);
 
 struct thread* thread_create(const char* name, void (*entry)(void*), void* arg);
+
+/* A thread whose first run doesn't start at an entry function but pops a
+ * saved interrupt frame and irets - which is how a forked child resumes in
+ * user mode exactly where its parent was. The frame is copied verbatim, so
+ * set the child's eax before calling. */
+struct thread* thread_create_forked(const char* name,
+                                    const struct registers* frame);
+
+/* Unlink a dead thread and free its stack and struct. Never the current
+ * thread - something has to be standing on solid ground to do the freeing,
+ * which is the whole reason zombies exist. */
+void thread_reap(struct thread* t);
 
 /* Hand the CPU on voluntarily. */
 void thread_yield(void);
