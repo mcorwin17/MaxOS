@@ -23,6 +23,7 @@
 #include "heap.h"
 #include "vma.h"
 #include "thread.h"
+#include "process.h"
 
 /* VGA text mode */
 #define VIDEO_MEMORY_ADDRESS    0xB8000
@@ -155,6 +156,7 @@ void system_initialize(void) {
     vma_selftest();
 
     thread_initialize();
+    process_initialize();
     thread_start_idle();
 
     pit_initialize(PIT_FREQUENCY_HZ);
