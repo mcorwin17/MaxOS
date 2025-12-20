@@ -12,6 +12,7 @@
 #include "heap.h"
 #include "vma.h"
 #include "thread.h"
+#include "process.h"
 
 #define LINE_MAX 128
 
@@ -48,6 +49,7 @@ static void cmd_mem(const char* args);
 static void cmd_heap(const char* args);
 static void cmd_vm(const char* args);
 static void cmd_ps(const char* args);
+static void cmd_run(const char* args);
 static void cmd_sleep(const char* args);
 static void cmd_reboot(const char* args);
 static void cmd_panic(const char* args);
@@ -68,6 +70,7 @@ static const struct command commands[] = {
     { "heap",   cmd_heap,   "kernel heap usage" },
     { "vm",     cmd_vm,     "reserved regions and resident pages" },
     { "ps",     cmd_ps,     "list threads" },
+    { "run",    cmd_run,    "run an embedded user program" },
     { "sleep",  cmd_sleep,  "block this thread for N ms" },
     { "reboot", cmd_reboot, "reset via the keyboard controller" },
     { "panic",  cmd_panic,  "deliberately panic, to see the handler" },
@@ -186,8 +189,68 @@ static void cmd_vm(const char* args) {
 
 static void cmd_ps(const char* args) {
     (void)args;
-    console_write("  id name             state    ticks\n");
+    console_write("  id pid name             state    ticks\n");
     thread_dump_console();
+}
+
+static void cmd_run(const char* args) {
+    if (args[0] == '\0') {
+        console_write("  run <name>\n");
+        return;
+    }
+
+    uint32_t frames_before = pmm_free_frames();
+
+    int pid = process_spawn(args);
+    if (pid < 0) {
+        console_write("  no such program: ");
+        console_write(args);
+        console_putchar('\n');
+        return;
+    }
+
+    /* If it's still going after 200ms it's compute-bound, and this print
+     * is the proof the kernel got the CPU back from ring 3. */
+    thread_sleep_ms(200);
+    if (process_is_live((uint32_t)pid)) {
+        kprintf("kernel: still scheduling while pid %d runs\n", pid);
+    }
+
+    /* Reap until it's our pid that comes back - strays first. */
+    for (;;) {
+        uint32_t reaped = 0;
+        int code = process_wait(&reaped);
+
+        if (code == -1 && reaped == 0) {
+            console_write("  nothing to wait for\n");
+            return;
+        }
+
+        if (reaped != (uint32_t)pid) continue;
+
+        console_write("  pid ");
+        write_number((uint32_t)pid);
+
+        if (code >= 128) {
+            console_write(" killed by exception ");
+            write_number((uint32_t)(code - 128));
+        } else {
+            console_write(" exited with ");
+            write_number((uint32_t)code);
+        }
+        console_putchar('\n');
+
+        uint32_t frames_after = pmm_free_frames();
+        console_write("  frame delta ");
+        if (frames_after >= frames_before) {
+            write_number(frames_after - frames_before);
+        } else {
+            console_putchar('-');
+            write_number(frames_before - frames_after);
+        }
+        console_putchar('\n');
+        return;
+    }
 }
 
 static uint32_t parse_number(const char* s) {

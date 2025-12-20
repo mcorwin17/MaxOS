@@ -29,7 +29,7 @@ ifeq ($(CC),clang)
 endif
 
 # -ffunction-sections so _start goes in .text._start and link.ld can put it
-# first; the bootloader jumps to 0x1000 with no idea what's there.
+# first; the bootloader jumps to 0x10000 with no idea what's there.
 # -fno-omit-frame-pointer so panic() can walk the ebp chain for a backtrace.
 #
 # The -mno-* flags are not optional. At -O2 the compiler will happily vectorise
@@ -40,13 +40,18 @@ endif
 CFLAGS  := $(CCTARGET) -m32 -ffreestanding -nostdlib -fno-pic \
            -ffunction-sections -fno-omit-frame-pointer \
            -mno-mmx -mno-sse -mno-sse2 -mno-80387 \
-           -fno-stack-protector -Wall -Wextra -O2 $(CFLAGS_EXTRA)
+           -fno-stack-protector -Wall -Wextra -O2 -Ibuild $(CFLAGS_EXTRA)
 
-SECTORS := 32          # keep in sync with KERNEL_SECTOR_COUNT in boot.asm
+SECTORS := 192         # keep in sync with KERNEL_SECTOR_COUNT in boot.asm
+
+CSRCS   := kernel serial panic idt pic pit console kbd shell pmm gdt vmm \
+           heap vma thread process syscall
+ASRCS   := isr switch usermode
 
 # kernel.o first so _start lands at the front even before link.ld sorts it
-COBJS   := build/kernel.o build/serial.o build/panic.o build/idt.o
-OBJS    := $(COBJS) build/isr.o
+OBJS    := $(patsubst %,build/%.o,$(CSRCS)) $(patsubst %,build/%.o,$(ASRCS))
+
+UPROGS  := $(wildcard user/*.asm)
 
 .PHONY: all clean qemu boot-test kernel-test test help
 .DEFAULT_GOAL := all
@@ -60,10 +65,34 @@ bin build:
 bin/boot.bin: bootloader/boot.asm $(wildcard bootloader/*.asm) | bin
 	$(ASM) -f bin $< -o $@
 
+# User programs get assembled flat and baked into a generated header the
+# kernel embeds, because there's no filesystem to load them from yet.
+build/user_blobs.h: $(UPROGS) | build
+	@{ echo '/* generated from user/ by the build - do not edit */'; \
+	   echo 'struct user_blob { const char* name; const unsigned char* bytes; unsigned int len; };'; \
+	   for f in $(UPROGS); do \
+	     n=$$(basename $$f .asm); \
+	     $(ASM) -f bin $$f -o build/$$n.ubin || exit 1; \
+	     echo "static const unsigned char blob_$$n[] = {"; \
+	     od -An -v -t x1 build/$$n.ubin | \
+	       sed -e 's/ \([0-9a-f][0-9a-f]\)/0x\1,/g'; \
+	     echo "};"; \
+	   done; \
+	   echo 'static const struct user_blob user_blobs[] = {'; \
+	   for f in $(UPROGS); do \
+	     n=$$(basename $$f .asm); \
+	     echo "  { \"$$n\", blob_$$n, sizeof(blob_$$n) },"; \
+	   done; \
+	   echo '};'; \
+	   echo 'static const unsigned int user_blob_count = sizeof(user_blobs) / sizeof(user_blobs[0]);'; \
+	} > $@
+
+build/process.o: build/user_blobs.h
+
 build/%.o: kernel/%.c $(wildcard kernel/*.h) | build
 	$(CC) $(CFLAGS) -c $< -o $@
 
-build/isr.o: kernel/isr.asm | build
+build/%.o: kernel/%.asm | build
 	$(ASM) -f elf32 $< -o $@
 
 bin/kernel.bin: $(OBJS) kernel/link.ld | bin
@@ -181,7 +210,41 @@ lock-test:
 	@echo "lock-test: PASS"
 	@$(MAKE) --no-print-directory clean >/dev/null 2>&1
 
-test: boot-test kernel-test fault-test shell-test
+# Ring 3 end to end: a user program runs, its write() syscall lands, a
+# kernel pointer handed to write() bounces, a wild user read gets the
+# process killed without taking the kernel down, and pure-userspace compute
+# gets preempted by the timer.
+user-test: floppy.img
+	@rm -f bin/user-test.log
+	@-{ sleep 5; printf 'run hello\n'; sleep 2; printf 'run crash\n'; sleep 2; \
+	    printf 'echo alive\n'; sleep 1; printf 'run spin\n'; sleep 5; } | \
+		timeout 40 $(QEMU) -fda floppy.img -boot a -display none -no-reboot \
+			-serial stdio -monitor none > bin/user-test.log 2>&1 || true
+	@grep -q "hello from ring 3" bin/user-test.log || { echo "user-test: FAIL (no ring 3 output)"; exit 1; }
+	@grep -q "bad write rejected" bin/user-test.log || { echo "user-test: FAIL (kernel pointer accepted)"; exit 1; }
+	@grep -q "exited with 42" bin/user-test.log     || { echo "user-test: FAIL (exit code lost)"; exit 1; }
+	@grep -q "killed by exception" bin/user-test.log || { echo "user-test: FAIL (user fault not contained)"; exit 1; }
+	@grep -q "^alive" bin/user-test.log             || { echo "user-test: FAIL (kernel died with the process)"; exit 1; }
+	@grep -q "still scheduling" bin/user-test.log   || { echo "user-test: FAIL (ring 3 never preempted)"; exit 1; }
+	@echo "user-test: PASS"
+
+# fork + copy-on-write + wait + exec. The marker byte is shared COW between
+# parent and child; the child's write must not show through. Frame delta 0
+# proves nothing leaks across a full spawn/fork/exit/reap cycle.
+fork-test: floppy.img
+	@rm -f bin/fork-test.log
+	@-{ sleep 5; printf 'run forktest\n'; sleep 3; printf 'run exectest\n'; sleep 3; \
+	    printf 'run forktest\n'; sleep 3; } | \
+		timeout 40 $(QEMU) -fda floppy.img -boot a -display none -no-reboot \
+			-serial stdio -monitor none > bin/fork-test.log 2>&1 || true
+	@grep -q "child: marker=B" bin/fork-test.log  || { echo "fork-test: FAIL (child never ran)"; exit 1; }
+	@grep -q "parent: marker=A" bin/fork-test.log || { echo "fork-test: FAIL (COW leaked the child's write)"; exit 1; }
+	@grep -q "child exited 9 as expected" bin/fork-test.log || { echo "fork-test: FAIL (wait lost the exit code)"; exit 1; }
+	@grep -q "exited with 42" bin/fork-test.log   || { echo "fork-test: FAIL (exec didn't become hello)"; exit 1; }
+	@grep -q "frame delta 0" bin/fork-test.log    || { echo "fork-test: FAIL (frames leaked)"; exit 1; }
+	@echo "fork-test: PASS"
+
+test: boot-test kernel-test fault-test shell-test user-test fork-test
 
 clean:
 	rm -rf bin build floppy.img

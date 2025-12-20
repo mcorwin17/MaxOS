@@ -31,8 +31,50 @@ It's early. No interrupts, no keyboard, no memory management, no filesystem.
 | Demand paging (VMAs) | **works**, zero-fill on fault |
 | Threads, preemptive scheduler | **works**, round robin at 100 Hz |
 | Spinlocks, blocking sleep | **works** |
-| User mode (ring 3) | todo |
+| Ring 3, `int 0x80` syscalls | **works**, 8 calls |
+| User pointer validation | **works**, kernel pointers bounce |
+| Fault isolation | **works**, user crash kills the process, not the kernel |
+| Processes: fork, exec, wait, exit | **works** |
+| Copy-on-write fork | **works**, verified from userspace |
 | Filesystem | todo |
+| Userspace shell / libc | todo |
+
+User programs are hand-written assembly in [user/](user/), assembled flat and
+embedded in the kernel image at build time — there's no filesystem to load
+them from yet. `run <name>` in the shell spawns one:
+
+```
+> run forktest
+forktest: before fork, marker=A
+child: marker=B
+parent: marker=A
+parent: child exited 9 as expected
+  pid 4 exited with 0
+  frame delta 0
+```
+
+That's fork and copy-on-write observed from the inside: the marker page is
+resident before the fork and shared read-only after it; the child's write
+triggers a COW copy, so the parent keeps seeing A. `frame delta 0` means a
+full spawn/fork/COW/exit/reap cycle returned every frame it took.
+
+A user crash is the process's problem, not the kernel's:
+
+```
+> run crash
+crash: touching kernel memory from ring 3
+=== user fault: page fault ===
+  protection violation, on a read, from user mode
+  at 0x00100000, eip 0x08048016
+process 2 (crash) killed: exception 14 in user mode
+> echo alive
+alive
+```
+
+Syscalls are `int 0x80` through a DPL-3 trap gate. Not `syscall`/`sysret` —
+that's the right answer on x86-64, where it's *the* mechanism, but on 32-bit
+AMD's `syscall` barely exists and `sysenter` is a fast path to add later, not
+a starting point.
 
 Reserving address space is separate from backing it. A 16 MB region costs one
 small allocation; frames only appear when a page is touched, via the page
@@ -94,6 +136,13 @@ halted.
 ```
 
 - **`make shell-test`** types at the shell over COM1 and checks it answers.
+- **`make user-test`** runs ring 3 end to end: user output arrives, a kernel
+  pointer handed to `write()` bounces, a wild user read kills the process
+  while the kernel keeps answering, and compute-bound user code gets
+  preempted by the timer.
+- **`make fork-test`** checks fork, COW (the child's write must not show
+  through to the parent), `wait` carrying the exit code, `exec`, and a frame
+  delta of zero across the whole cycle.
 - **`make lock-test`** runs four threads incrementing a shared counter, once
   with the spinlock and once deliberately without, and requires the two to
   disagree:
