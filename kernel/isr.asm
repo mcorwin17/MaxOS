@@ -114,6 +114,15 @@ isr_common:
     call isr_handler
     add esp, 4
 
+    ; One choke point for signal delivery, whatever door we came in through.
+    ; Checks the frame's cs and does nothing for kernel-mode returns. A
+    ; forked child enters below at fork_ret and skips this - nothing can be
+    ; pending on a process that hasn't run yet.
+    extern signal_check
+    push esp
+    call signal_check
+    add esp, 4
+
 fork_ret:
     pop eax                 ; restore data segment
     mov ds, ax

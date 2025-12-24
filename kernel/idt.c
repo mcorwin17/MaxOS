@@ -187,8 +187,8 @@ void isr_handler(struct registers* r) {
     const char* name = (r->vector < 32) ? exception_names[r->vector]
                                         : "unknown";
 
-    /* A fault from ring 3 kills the process, not the kernel. The saved cs
-     * carries the privilege level it arrived from. */
+    /* A fault from ring 3 becomes SIGSEGV for the process, not a kernel
+     * panic. The saved cs carries the privilege level it arrived from. */
     if ((r->cs & 3) == 3) {
         kprintf("\n=== user fault: %s ===\n", name);
         if (r->vector == 14) {
@@ -197,7 +197,8 @@ void isr_handler(struct registers* r) {
             __asm__ volatile("mov %%cr2, %0" : "=r"(cr2));
             kprintf("  at 0x%08x, eip 0x%08x\n", cr2, r->eip);
         }
-        process_kill_current(r->vector);
+        process_fault_current(r->vector);
+        return;     /* signal_check on the way out takes it from here */
     }
 
     kprintf("\n=== exception %u: %s ===\n", r->vector, name);

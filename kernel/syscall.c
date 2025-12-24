@@ -8,6 +8,7 @@
 #include "vma.h"
 #include "pit.h"
 #include "serial.h"
+#include "signal.h"
 
 #define WRITE_MAX  4096
 #define NAME_MAX   32
@@ -88,6 +89,25 @@ void syscall_dispatch(struct registers* r) {
         r->eax = (uint32_t)process_exec(r, name);
         return;
     }
+
+    case SYS_SIGNAL:
+        r->eax = (uint32_t)signal_install(process_current(), (int)r->ebx,
+                                          r->ecx, r->edx);
+        return;
+
+    case SYS_KILL: {
+        struct process* target = process_find(r->ebx);
+        if (!target) { r->eax = (uint32_t)-1; return; }
+        signal_send(target, (int)r->ecx);
+        r->eax = 0;
+        return;
+    }
+
+    case SYS_SIGRETURN:
+        /* Restores the whole parked frame, eax included - no return value
+         * to write, the restored world IS the result. */
+        (void)signal_return(r);
+        return;
 
     default:
         kprintf("syscall: pid %u asked for unknown syscall %u\n",

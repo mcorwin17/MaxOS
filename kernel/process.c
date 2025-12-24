@@ -101,6 +101,11 @@ int process_spawn(const char* name) {
     p->parent    = process_current();
     vma_as_init(&p->as, pd);
 
+    p->sig_pending    = 0;
+    p->sig_restorer   = 0;
+    p->sig_in_handler = 0;
+    for (int i = 0; i < NSIG; ++i) p->sig_handler[i] = SIG_DFL;
+
     /* Code region gets write permission too: the loader thread has to copy
      * the program in, and the program keeps its data in the same pages.
      * W^X is a refinement for the day there are separate segments. */
@@ -158,6 +163,15 @@ int process_fork(struct registers* r) {
     child->exit_code = 0;
     child->parent    = parent;
     vma_as_init(&child->as, pd);
+
+    /* Handlers cross the fork, pending signals don't - they were aimed at
+     * the parent, not at whoever it becomes. */
+    child->sig_pending    = 0;
+    child->sig_in_handler = 0;
+    child->sig_restorer   = parent->sig_restorer;
+    for (int i = 0; i < NSIG; ++i) {
+        child->sig_handler[i] = parent->sig_handler[i];
+    }
 
     if (!vma_clone(&child->as, &parent->as)) {
         vma_release_all(&child->as);
@@ -219,6 +233,12 @@ int process_exec(struct registers* r, const char* name) {
 
     copy_bytes((uint8_t*)USER_CODE_BASE, blob->bytes, blob->len);
 
+    /* The new program never installed anyone's handlers. */
+    p->sig_pending    = 0;
+    p->sig_in_handler = 0;
+    p->sig_restorer   = 0;
+    for (int i = 0; i < NSIG; ++i) p->sig_handler[i] = SIG_DFL;
+
     /* Rewriting the saved frame is what makes the iret land in the new
      * program instead of after the old one's int 0x80. */
     r->eip     = USER_CODE_BASE;
@@ -262,10 +282,17 @@ int process_wait(uint32_t* pid_out) {
             thread_reap(zombie->thread);
             kfree(zombie);
 
+            /* The SIGCHLD for this exit is answered by the reap. */
+            self->sig_pending &= ~(1u << SIGCHLD);
+
             return code;
         }
 
         if (!have_children) return -1;
+
+        /* A real signal interrupts the wait; the SIGCHLD that wakes us for
+         * a reap doesn't count as one. */
+        if (self->sig_pending & ~(1u << SIGCHLD)) return -2;
 
         /* Block until an exit wakes us. WAITING, not SLEEPING - the timer
          * has no business waking this thread. */
@@ -296,6 +323,9 @@ void process_exit(int code) {
     self->exit_code = code;
     self->state     = PROC_ZOMBIE;
 
+    /* Nobody should aim Ctrl-C at a corpse. */
+    console_clear_foreground(self);
+
     /* Orphans go to the kernel process, which reaps strays in its wait. */
     uint32_t flags = spin_lock_irq(&proc_lock);
     for (struct process* p = processes; p; p = p->next) {
@@ -307,19 +337,26 @@ void process_exit(int code) {
     }
     spin_unlock_irq(&proc_lock, flags);
 
+    if (self->parent) signal_send(self->parent, SIGCHLD);
+
     thread_current()->state = THREAD_DEAD;
     schedule();
 
     panic("process_exit: scheduled a dead thread");
 }
 
-void process_kill_current(uint32_t vector) {
+void process_fault_current(uint32_t vector) {
     struct process* self = process_current();
 
-    kprintf("process %u (%s) killed: exception %u in user mode\n",
+    kprintf("process %u (%s): exception %u in user mode -> SIGSEGV\n",
             self->pid, self->thread->name, vector);
 
-    process_exit(128 + (int)vector);
+    /* Just send the signal and return through the normal exit path from the
+     * fault. signal_check on the way back to ring 3 does the rest: default
+     * action kills with 128+SIGSEGV, a handler catches it like anything
+     * else. The faulting instruction is never resumed uncaught because the
+     * delivery rewrites the frame before the iret. */
+    signal_send(self, SIGSEGV);
 }
 
 int process_is_live(uint32_t pid) {
@@ -332,6 +369,18 @@ int process_is_live(uint32_t pid) {
 
     spin_unlock_irq(&proc_lock, flags);
     return live;
+}
+
+struct process* process_find(uint32_t pid) {
+    uint32_t flags = spin_lock_irq(&proc_lock);
+
+    struct process* found = 0;
+    for (struct process* p = processes; p; p = p->next) {
+        if (p->pid == pid && p->state == PROC_LIVE) { found = p; break; }
+    }
+
+    spin_unlock_irq(&proc_lock, flags);
+    return found;
 }
 
 void process_dump(void) {

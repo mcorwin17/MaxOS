@@ -10,6 +10,7 @@
 #include <stdint.h>
 #include "vma.h"
 #include "panic.h"
+#include "signal.h"
 
 struct thread;
 
@@ -28,6 +29,14 @@ struct process {
     struct addrspace   as;
     struct thread*     thread;
     struct process*    next;
+
+    /* Signals. Handlers survive fork, reset on exec; pending doesn't
+     * survive either. */
+    uint32_t         sig_pending;
+    uint32_t         sig_handler[NSIG];
+    uint32_t         sig_restorer;
+    int              sig_in_handler;
+    struct registers sig_saved;
 };
 
 void process_initialize(void);
@@ -48,9 +57,14 @@ void process_exit(int code) __attribute__((noreturn));
 /* True while the pid exists and hasn't exited. */
 int  process_is_live(uint32_t pid);
 
-/* A user thread faulted: report, kill the process, schedule on. The kernel
- * does not go down because a user program dereferenced garbage. */
-void process_kill_current(uint32_t vector) __attribute__((noreturn));
+/* Live process for a pid, or 0. The pointer stays valid until the process
+ * is reaped, so don't hold it across a wait. */
+struct process* process_find(uint32_t pid);
+
+/* A user thread faulted: hand it SIGSEGV and return. The default action
+ * kills it on the way back to ring 3; a handler catches it like any other
+ * signal. Either way the kernel keeps going. */
+void process_fault_current(uint32_t vector);
 
 void process_dump(void);
 
