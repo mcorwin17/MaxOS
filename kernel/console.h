@@ -25,4 +25,11 @@ int console_has_input(void);
 void console_putchar(char c);
 void console_write(const char* str);
 
+/* The foreground process is who Ctrl-C is for. While one is set, a 0x03
+ * from either input source becomes SIGINT to it instead of a buffered
+ * byte. */
+struct process;
+void console_set_foreground(struct process* p);
+void console_clear_foreground(struct process* p);
+
 #endif

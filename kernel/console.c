@@ -4,6 +4,7 @@
 #include "console.h"
 #include "serial.h"
 #include "vga.h"
+#include "signal.h"
 
 #define BUFFER_SIZE 128     /* power of two, so the wrap is a mask */
 
@@ -11,7 +12,23 @@ static volatile char     buffer[BUFFER_SIZE];
 static volatile uint32_t head = 0;   /* producer, interrupt context */
 static volatile uint32_t tail = 0;   /* consumer, thread context */
 
+static struct process* volatile foreground;
+
+void console_set_foreground(struct process* p)   { foreground = p; }
+
+void console_clear_foreground(struct process* p) {
+    if (foreground == p) foreground = 0;
+}
+
 void console_push(char c) {
+    /* The beginning of a line discipline: Ctrl-C isn't input, it's a
+     * statement about the foreground process. signal_send is IRQ-safe -
+     * a bit set and a state flip, nothing more. */
+    if (c == 0x03 && foreground) {
+        signal_send(foreground, SIGINT);
+        return;
+    }
+
     uint32_t next = (head + 1) & (BUFFER_SIZE - 1);
 
     if (next == tail) return;   /* full, drop it */
