@@ -24,6 +24,8 @@
 #include "vma.h"
 #include "thread.h"
 #include "process.h"
+#include "ata.h"
+#include "bcache.h"
 
 /* VGA text mode */
 #define VIDEO_MEMORY_ADDRESS    0xB8000
@@ -161,6 +163,9 @@ void system_initialize(void) {
 
     pit_initialize(PIT_FREQUENCY_HZ);
     kprintf("pit: %uHz on IRQ0\n", PIT_FREQUENCY_HZ);
+
+    ata_initialize();
+    bcache_initialize();
 
     kbd_initialize();
     kprintf("kbd: PS/2 on IRQ1\n");

@@ -244,7 +244,43 @@ fork-test: floppy.img
 	@grep -q "frame delta 0" bin/fork-test.log    || { echo "fork-test: FAIL (frames leaked)"; exit 1; }
 	@echo "fork-test: PASS"
 
-test: boot-test kernel-test fault-test shell-test user-test fork-test
+# Ctrl-C both ways: default action kills loop (128+2), a handler in catcher
+# gets the full deliver/handle/sigreturn/resume round trip, and a user fault
+# reads as signal 11 through the same machinery.
+sig-test: floppy.img
+	@rm -f bin/sig-test.log
+	@-{ sleep 5; printf 'run loop\n'; sleep 2; printf '\003'; sleep 2; \
+	    printf 'run catcher\n'; sleep 2; printf '\003'; sleep 2; \
+	    printf 'run crash\n'; sleep 2; printf 'echo alive\n'; sleep 1; } | \
+		timeout 40 $(QEMU) -fda floppy.img -boot a -display none -no-reboot \
+			-serial stdio -monitor none > bin/sig-test.log 2>&1 || true
+	@grep -q "killed by signal 2" bin/sig-test.log  || { echo "sig-test: FAIL (Ctrl-C default action)"; exit 1; }
+	@grep -q "caught SIGINT in the handler" bin/sig-test.log || { echo "sig-test: FAIL (handler never ran)"; exit 1; }
+	@grep -q "resumed after sigreturn" bin/sig-test.log || { echo "sig-test: FAIL (sigreturn didn't resume)"; exit 1; }
+	@grep -q "killed by signal 11" bin/sig-test.log || { echo "sig-test: FAIL (fault didn't become SIGSEGV)"; exit 1; }
+	@grep -q "^alive" bin/sig-test.log              || { echo "sig-test: FAIL (kernel went down)"; exit 1; }
+	@echo "sig-test: PASS"
+
+# Whole storage path: identify, write through the cache, flush, verify from
+# the device inside the guest - then verify the bytes landed in the image
+# file from out here, after qemu is gone. The cache can't fake that.
+disk-test: floppy.img
+	@dd if=/dev/zero of=bin/d.img bs=1M count=4 status=none
+	@rm -f bin/disk-test.log
+	@-{ sleep 5; printf 'disk\n'; sleep 1; printf 'dtest\n'; sleep 2; } | \
+		timeout 30 $(QEMU) -fda floppy.img -boot a \
+			-drive file=bin/d.img,format=raw,if=ide \
+			-display none -no-reboot -serial stdio -monitor none \
+			> bin/disk-test.log 2>&1 || true
+	@grep -q "selftest ok, sector 100" bin/disk-test.log \
+		|| { echo "disk-test: FAIL (guest-side verify)"; exit 1; }
+	@dd if=bin/d.img bs=512 skip=100 count=1 status=none | head -c 8 | \
+		grep -q "MAXOSDSK" \
+		|| { echo "disk-test: FAIL (write never reached the image file)"; exit 1; }
+	@echo "disk-test: PASS"
+
+test: boot-test kernel-test fault-test shell-test user-test fork-test \
+      sig-test disk-test
 
 clean:
 	rm -rf bin build floppy.img

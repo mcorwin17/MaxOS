@@ -36,8 +36,35 @@ It's early. No interrupts, no keyboard, no memory management, no filesystem.
 | Fault isolation | **works**, user crash kills the process, not the kernel |
 | Processes: fork, exec, wait, exit | **works** |
 | Copy-on-write fork | **works**, verified from userspace |
+| Signals, Ctrl-C, `sigreturn` | **works**, handlers resume |
+| ATA PIO disk + block cache | **works**, host-verified writes |
 | Filesystem | todo |
 | Userspace shell / libc | todo |
+
+Ctrl-C is the start of a line discipline: while a foreground process runs,
+`0x03` from either input source becomes SIGINT instead of a buffered byte.
+Default action is Unix-style death (`killed by signal 2`); a handler
+installed with `signal(sig, handler, restorer)` gets the interrupted context
+parked, runs, and returns through the restorer's `sigreturn`, which puts the
+world back:
+
+```
+> run catcher
+catcher: ready, interrupt me
+catcher: caught SIGINT in the handler
+catcher: resumed after sigreturn
+  pid 2 exited with 5
+```
+
+User faults ride the same rails now — an exception in ring 3 becomes
+SIGSEGV, so `crash` dies "killed by signal 11" (exit 139), matching the
+convention everything else uses.
+
+The disk is ATA PIO with a write-back block cache in front. `dtest` writes a
+pattern through the cache, flushes, and re-reads from the device; the make
+target then checks the bytes landed in the image *file* after qemu exits —
+the cache can't fake that. (The roadmap said virtio, but that advice serves
+the 64-bit cloud path; on a legacy BIOS design ATA PIO is the native choice.)
 
 User programs are hand-written assembly in [user/](user/), assembled flat and
 embedded in the kernel image at build time — there's no filesystem to load
@@ -143,6 +170,12 @@ halted.
 - **`make fork-test`** checks fork, COW (the child's write must not show
   through to the parent), `wait` carrying the exit code, `exec`, and a frame
   delta of zero across the whole cycle.
+- **`make sig-test`** sends a real `^C` byte over serial: default action
+  kills `loop`, `catcher`'s handler catches and resumes via `sigreturn`, and
+  a user fault arrives as signal 11.
+- **`make disk-test`** writes through the block cache, flushes, verifies on
+  the device from inside the guest — then verifies the bytes in the disk
+  image file from the host after qemu exits.
 - **`make lock-test`** runs four threads incrementing a shared counter, once
   with the spinlock and once deliberately without, and requires the two to
   disagree:

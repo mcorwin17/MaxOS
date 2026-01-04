@@ -13,6 +13,9 @@
 #include "vma.h"
 #include "thread.h"
 #include "process.h"
+#include "signal.h"
+#include "ata.h"
+#include "bcache.h"
 
 #define LINE_MAX 128
 
@@ -50,6 +53,9 @@ static void cmd_heap(const char* args);
 static void cmd_vm(const char* args);
 static void cmd_ps(const char* args);
 static void cmd_run(const char* args);
+static void cmd_kill(const char* args);
+static void cmd_disk(const char* args);
+static void cmd_dtest(const char* args);
 static void cmd_sleep(const char* args);
 static void cmd_reboot(const char* args);
 static void cmd_panic(const char* args);
@@ -71,6 +77,9 @@ static const struct command commands[] = {
     { "vm",     cmd_vm,     "reserved regions and resident pages" },
     { "ps",     cmd_ps,     "list threads" },
     { "run",    cmd_run,    "run an embedded user program" },
+    { "kill",   cmd_kill,   "send a signal: kill <pid> [sig]" },
+    { "disk",   cmd_disk,   "drive identify and cache stats" },
+    { "dtest",  cmd_dtest,  "write/flush/verify a disk sector" },
     { "sleep",  cmd_sleep,  "block this thread for N ms" },
     { "reboot", cmd_reboot, "reset via the keyboard controller" },
     { "panic",  cmd_panic,  "deliberately panic, to see the handler" },
@@ -209,6 +218,9 @@ static void cmd_run(const char* args) {
         return;
     }
 
+    /* While it runs, Ctrl-C belongs to it. */
+    console_set_foreground(process_find((uint32_t)pid));
+
     /* If it's still going after 200ms it's compute-bound, and this print
      * is the proof the kernel got the CPU back from ring 3. */
     thread_sleep_ms(200);
@@ -232,7 +244,9 @@ static void cmd_run(const char* args) {
         write_number((uint32_t)pid);
 
         if (code >= 128) {
-            console_write(" killed by exception ");
+            /* Unix convention: 128+sig. Ctrl-C reads as signal 2, a user
+             * fault as signal 11. */
+            console_write(" killed by signal ");
             write_number((uint32_t)(code - 128));
         } else {
             console_write(" exited with ");
@@ -257,6 +271,55 @@ static uint32_t parse_number(const char* s) {
     uint32_t n = 0;
     while (*s >= '0' && *s <= '9') { n = n * 10 + (uint32_t)(*s - '0'); ++s; }
     return n;
+}
+
+static void cmd_kill(const char* args) {
+    uint32_t pid = parse_number(args);
+
+    /* Optional signal after the pid; default SIGINT. */
+    while (*args >= '0' && *args <= '9') ++args;
+    args = skip_spaces(args);
+    uint32_t sig = (*args) ? parse_number(args) : 2;
+
+    struct process* p = process_find(pid);
+    if (!p) {
+        console_write("  no such pid\n");
+        return;
+    }
+
+    signal_send(p, (int)sig);
+    console_write("  sent\n");
+}
+
+static void cmd_disk(const char* args) {
+    (void)args;
+
+    if (!ata_present()) {
+        console_write("  no disk attached\n");
+        return;
+    }
+
+    console_write("  model   ");
+    console_write(ata_model());
+    console_putchar('\n');
+
+    console_write("  size    ");
+    write_number(ata_sector_count());
+    console_write(" sectors (");
+    write_number(ata_sector_count() / 2048);
+    console_write(" MB)\n");
+
+    console_write("  cache   ");
+    write_number(bcache_hits());
+    console_write(" hits, ");
+    write_number(bcache_misses());
+    console_write(" misses\n");
+}
+
+static void cmd_dtest(const char* args) {
+    (void)args;
+    bcache_selftest();
+    console_write("  dtest done\n");
 }
 
 static void cmd_sleep(const char* args) {
