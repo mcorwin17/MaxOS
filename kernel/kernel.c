@@ -26,6 +26,8 @@
 #include "process.h"
 #include "ata.h"
 #include "bcache.h"
+#include "ramfs.h"
+#include "fat16.h"
 
 /* VGA text mode */
 #define VIDEO_MEMORY_ADDRESS    0xB8000
@@ -166,6 +168,8 @@ void system_initialize(void) {
 
     ata_initialize();
     bcache_initialize();
+    ramfs_mount();
+    fat16_mount();
 
     kbd_initialize();
     kprintf("kbd: PS/2 on IRQ1\n");

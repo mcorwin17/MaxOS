@@ -9,6 +9,7 @@
 #include "pit.h"
 #include "serial.h"
 #include "signal.h"
+#include "vfs.h"
 
 #define WRITE_MAX  4096
 #define NAME_MAX   32
@@ -108,6 +109,88 @@ void syscall_dispatch(struct registers* r) {
          * to write, the restored world IS the result. */
         (void)signal_return(r);
         return;
+
+    case SYS_OPEN: {
+        char path[FD_PATH_MAX];
+        if (copy_user_string(path, r->ebx, FD_PATH_MAX) != 0) {
+            r->eax = (uint32_t)-1;
+            return;
+        }
+
+        struct vfs_stat st;
+        if (vfs_stat(path, &st) != 0 || st.is_dir) {
+            r->eax = (uint32_t)-1;
+            return;
+        }
+
+        struct process* p = process_current();
+        for (int fd = FD_FIRST; fd < FD_MAX; ++fd) {
+            if (p->fds[fd].used) continue;
+
+            p->fds[fd].used = 1;
+            p->fds[fd].off  = 0;
+            for (int i = 0; i < FD_PATH_MAX; ++i) {
+                p->fds[fd].path[i] = path[i];
+                if (!path[i]) break;
+            }
+
+            r->eax = (uint32_t)fd;
+            return;
+        }
+
+        r->eax = (uint32_t)-1;      /* table full */
+        return;
+    }
+
+    case SYS_READ: {
+        uint32_t fd = r->ebx, buf = r->ecx, n = r->edx;
+
+        if (n > WRITE_MAX) n = WRITE_MAX;
+        if (!vma_user_range_ok(vma_active(), buf, n)) {
+            r->eax = (uint32_t)-1;
+            return;
+        }
+
+        if (fd == 0) {
+            /* Console: block for the first byte, drain what's buffered. */
+            char* out = (char*)buf;
+            uint32_t got = 0;
+            if (n > 0) {
+                out[got++] = console_getchar();
+                while (got < n && console_has_input()) {
+                    out[got++] = console_getchar();
+                }
+            }
+            r->eax = got;
+            return;
+        }
+
+        struct process* p = process_current();
+        if (fd < FD_FIRST || fd >= FD_MAX || !p->fds[fd].used) {
+            r->eax = (uint32_t)-1;
+            return;
+        }
+
+        int got = vfs_read(p->fds[fd].path, p->fds[fd].off, (void*)buf, n);
+        if (got > 0) p->fds[fd].off += (uint32_t)got;
+
+        r->eax = (uint32_t)got;
+        return;
+    }
+
+    case SYS_CLOSE: {
+        uint32_t fd = r->ebx;
+        struct process* p = process_current();
+
+        if (fd < FD_FIRST || fd >= FD_MAX || !p->fds[fd].used) {
+            r->eax = (uint32_t)-1;
+            return;
+        }
+
+        p->fds[fd].used = 0;
+        r->eax = 0;
+        return;
+    }
 
     default:
         kprintf("syscall: pid %u asked for unknown syscall %u\n",

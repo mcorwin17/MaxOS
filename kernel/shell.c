@@ -16,6 +16,7 @@
 #include "signal.h"
 #include "ata.h"
 #include "bcache.h"
+#include "vfs.h"
 
 #define LINE_MAX 128
 
@@ -56,6 +57,9 @@ static void cmd_run(const char* args);
 static void cmd_kill(const char* args);
 static void cmd_disk(const char* args);
 static void cmd_dtest(const char* args);
+static void cmd_ls(const char* args);
+static void cmd_cat(const char* args);
+static void cmd_cksum(const char* args);
 static void cmd_sleep(const char* args);
 static void cmd_reboot(const char* args);
 static void cmd_panic(const char* args);
@@ -80,6 +84,9 @@ static const struct command commands[] = {
     { "kill",   cmd_kill,   "send a signal: kill <pid> [sig]" },
     { "disk",   cmd_disk,   "drive identify and cache stats" },
     { "dtest",  cmd_dtest,  "write/flush/verify a disk sector" },
+    { "ls",     cmd_ls,     "list a directory" },
+    { "cat",    cmd_cat,    "print a file" },
+    { "cksum",  cmd_cksum,  "length and byte sum of a file" },
     { "sleep",  cmd_sleep,  "block this thread for N ms" },
     { "reboot", cmd_reboot, "reset via the keyboard controller" },
     { "panic",  cmd_panic,  "deliberately panic, to see the handler" },
@@ -320,6 +327,87 @@ static void cmd_dtest(const char* args) {
     (void)args;
     bcache_selftest();
     console_write("  dtest done\n");
+}
+
+static void ls_emit(const char* name, uint32_t size, int is_dir, void* ctx) {
+    (void)ctx;
+    console_write("  ");
+    console_write(name);
+
+    uint32_t n = 0;
+    while (name[n]) ++n;
+    for (uint32_t pad = n; pad < 14; ++pad) console_putchar(' ');
+
+    if (is_dir) {
+        console_write("<dir>\n");
+    } else {
+        write_number(size);
+        console_putchar('\n');
+    }
+}
+
+static void cmd_ls(const char* args) {
+    const char* path = (args[0] == '\0') ? "/" : args;
+
+    if (vfs_list(path, ls_emit, 0) != 0) {
+        console_write("  can't list ");
+        console_write(path);
+        console_putchar('\n');
+    }
+}
+
+static void cmd_cat(const char* args) {
+    if (args[0] == '\0') {
+        console_write("  cat <path>\n");
+        return;
+    }
+
+    char chunk[128];
+    uint32_t off = 0;
+
+    for (;;) {
+        int got = vfs_read(args, off, chunk, sizeof(chunk));
+        if (got < 0) {
+            console_write("  can't read ");
+            console_write(args);
+            console_putchar('\n');
+            return;
+        }
+        if (got == 0) return;
+
+        for (int i = 0; i < got; ++i) console_putchar(chunk[i]);
+        off += (uint32_t)got;
+    }
+}
+
+static void cmd_cksum(const char* args) {
+    if (args[0] == '\0') {
+        console_write("  cksum <path>\n");
+        return;
+    }
+
+    uint8_t chunk[512];
+    uint32_t off = 0, sum = 0;
+
+    for (;;) {
+        int got = vfs_read(args, off, chunk, sizeof(chunk));
+        if (got < 0) {
+            console_write("  can't read ");
+            console_write(args);
+            console_putchar('\n');
+            return;
+        }
+        if (got == 0) break;
+
+        for (int i = 0; i < got; ++i) sum += chunk[i];
+        off += (uint32_t)got;
+    }
+
+    console_write("  ");
+    write_number(off);
+    console_write(" bytes, sum ");
+    write_number(sum);
+    console_putchar('\n');
 }
 
 static void cmd_sleep(const char* args) {

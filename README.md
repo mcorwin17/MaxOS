@@ -38,8 +38,35 @@ It's early. No interrupts, no keyboard, no memory management, no filesystem.
 | Copy-on-write fork | **works**, verified from userspace |
 | Signals, Ctrl-C, `sigreturn` | **works**, handlers resume |
 | ATA PIO disk + block cache | **works**, host-verified writes |
-| Filesystem | todo |
+| VFS, two backends | **works**, ramfs + FAT16 |
+| FAT16 read, subdirs, MBR partitions | **works**, vs qemu's vvfat |
+| `open`/`read`/`close` fd syscalls | **works**, from ring 3 |
+| FAT write support | todo |
 | Userspace shell / libc | todo |
+
+The filesystem test is the fun one. qemu's vvfat driver synthesizes a real
+FAT filesystem from a host directory, so the kernel's FAT16 reader is
+verified against an implementation that isn't in this repo: the host writes
+files, the guest lists them (names *and* sizes), cats them, byte-sums a
+10 KB file spanning multiple clusters, walks a subdirectory, and then a
+ring-3 program reads one through `open`/`read`/`close`:
+
+```
+> ls /
+  BIG.BIN       10000
+  HELLO.TXT     31
+  SUB           <dir>
+> cksum /BIG.BIN
+  10000 bytes, sum 1275000      <- matches the host's number exactly
+> run readfile
+readfile got: hello from the host filesystem
+```
+
+The VFS is path-based routing with longest-prefix mounts and a per-fs
+vtable; ramfs exists to keep it honest — one backend is just that
+filesystem with extra steps. Inodes and a dentry cache earn their
+complexity when there are hard links, rename, and cache pressure; none of
+those exist here yet.
 
 Ctrl-C is the start of a line discipline: while a foreground process runs,
 `0x03` from either input source becomes SIGINT instead of a buffered byte.
@@ -176,6 +203,9 @@ halted.
 - **`make disk-test`** writes through the block cache, flushes, verifies on
   the device from inside the guest — then verifies the bytes in the disk
   image file from the host after qemu exits.
+- **`make fat-test`** reads a vvfat-synthesized filesystem: names, sizes,
+  contents, a multi-cluster byte sum, a subdirectory, the ramfs backend, and
+  a ring-3 `open`/`read`/`close` of a host-written file.
 - **`make lock-test`** runs four threads incrementing a shared counter, once
   with the spinlock and once deliberately without, and requires the two to
   disagree:

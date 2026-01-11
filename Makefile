@@ -45,7 +45,7 @@ CFLAGS  := $(CCTARGET) -m32 -ffreestanding -nostdlib -fno-pic \
 SECTORS := 192         # keep in sync with KERNEL_SECTOR_COUNT in boot.asm
 
 CSRCS   := kernel serial panic idt pic pit console kbd shell pmm gdt vmm \
-           heap vma thread process syscall
+           heap vma thread process syscall signal ata bcache vfs ramfs fat16
 ASRCS   := isr switch usermode
 
 # kernel.o first so _start lands at the front even before link.ld sorts it
@@ -279,8 +279,40 @@ disk-test: floppy.img
 		|| { echo "disk-test: FAIL (write never reached the image file)"; exit 1; }
 	@echo "disk-test: PASS"
 
+# The FAT reader against a filesystem this repo didn't make: qemu's vvfat
+# synthesizes real FAT from a host directory. Names, sizes, exact contents,
+# a byte-sum over a multi-cluster file, a subdirectory, the ramfs backend
+# through the same vtable, and a ring-3 read through the fd syscalls.
+fat-test: floppy.img
+	@rm -rf bin/fatdir bin/fat-test.log
+	@mkdir -p bin/fatdir/SUB
+	@printf 'hello from the host filesystem\n' > bin/fatdir/HELLO.TXT
+	@awk 'BEGIN{for(i=0;i<10000;i++)printf "%c",((i*31+7)%255)+1}' \
+		> bin/fatdir/BIG.BIN
+	@printf 'note in a subdirectory\n' > bin/fatdir/SUB/NOTE.TXT
+	@-{ sleep 5; printf 'ls /\n'; sleep 1; printf 'cat /HELLO.TXT\n'; sleep 1; \
+	    printf 'cat /SUB/NOTE.TXT\n'; sleep 1; printf 'cksum /BIG.BIN\n'; sleep 2; \
+	    printf 'cat /ram/hello.txt\n'; sleep 1; printf 'run readfile\n'; sleep 2; } | \
+		timeout 40 $(QEMU) -fda floppy.img -boot a \
+			-drive file=fat:bin/fatdir,if=ide,snapshot=on \
+			-display none -no-reboot -serial stdio -monitor none \
+			> bin/fat-test.log 2>&1 || true
+	@grep -q "HELLO.TXT" bin/fat-test.log || { echo "fat-test: FAIL (ls)"; exit 1; }
+	@grep -q "hello from the host filesystem" bin/fat-test.log \
+		|| { echo "fat-test: FAIL (file content)"; exit 1; }
+	@grep -q "note in a subdirectory" bin/fat-test.log \
+		|| { echo "fat-test: FAIL (subdirectory)"; exit 1; }
+	@SUM=$$(awk 'BEGIN{s=0;for(i=0;i<10000;i++)s+=((i*31+7)%255)+1;print s}'); \
+		grep -q "10000 bytes, sum $$SUM" bin/fat-test.log \
+		|| { echo "fat-test: FAIL (multi-cluster read)"; exit 1; }
+	@grep -q "ramfs says hi" bin/fat-test.log \
+		|| { echo "fat-test: FAIL (second backend)"; exit 1; }
+	@grep -q "readfile got: hello" bin/fat-test.log \
+		|| { echo "fat-test: FAIL (fd syscalls from ring 3)"; exit 1; }
+	@echo "fat-test: PASS"
+
 test: boot-test kernel-test fault-test shell-test user-test fork-test \
-      sig-test disk-test
+      sig-test disk-test fat-test
 
 clean:
 	rm -rf bin build floppy.img

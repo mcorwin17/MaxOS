@@ -105,6 +105,7 @@ int process_spawn(const char* name) {
     p->sig_restorer   = 0;
     p->sig_in_handler = 0;
     for (int i = 0; i < NSIG; ++i) p->sig_handler[i] = SIG_DFL;
+    for (int i = 0; i < FD_MAX; ++i) p->fds[i].used = 0;
 
     /* Code region gets write permission too: the loader thread has to copy
      * the program in, and the program keeps its data in the same pages.
@@ -172,6 +173,9 @@ int process_fork(struct registers* r) {
     for (int i = 0; i < NSIG; ++i) {
         child->sig_handler[i] = parent->sig_handler[i];
     }
+
+    /* Descriptors cross the fork, offsets and all. */
+    for (int i = 0; i < FD_MAX; ++i) child->fds[i] = parent->fds[i];
 
     if (!vma_clone(&child->as, &parent->as)) {
         vma_release_all(&child->as);

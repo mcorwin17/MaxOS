@@ -21,6 +21,18 @@ struct thread;
 
 enum process_state { PROC_LIVE, PROC_ZOMBIE };
 
+/* Open files. Path + offset is all a descriptor is while the VFS speaks
+ * paths; 0/1/2 are the console by convention, so real files start at 3. */
+#define FD_MAX      8
+#define FD_PATH_MAX 64
+#define FD_FIRST    3
+
+struct fdesc {
+    int      used;
+    uint32_t off;
+    char     path[FD_PATH_MAX];
+};
+
 struct process {
     uint32_t           pid;
     enum process_state state;
@@ -37,6 +49,9 @@ struct process {
     uint32_t         sig_restorer;
     int              sig_in_handler;
     struct registers sig_saved;
+
+    /* Open files survive both fork and exec, Unix style. */
+    struct fdesc fds[FD_MAX];
 };
 
 void process_initialize(void);
