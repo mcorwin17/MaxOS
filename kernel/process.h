@@ -21,17 +21,30 @@ struct thread;
 
 enum process_state { PROC_LIVE, PROC_ZOMBIE };
 
-/* Open files. Path + offset is all a descriptor is while the VFS speaks
- * paths; 0/1/2 are the console by convention, so real files start at 3. */
+/* Open files. 0/1/2 start out as the console; dup2 can point them at
+ * anything, which is how a pipeline redirects stdin and stdout. */
 #define FD_MAX      8
 #define FD_PATH_MAX 64
 #define FD_FIRST    3
 
-struct fdesc {
-    int      used;
-    uint32_t off;
-    char     path[FD_PATH_MAX];
+enum fd_type {
+    FDT_NONE = 0,
+    FDT_CONSOLE,
+    FDT_FILE,
+    FDT_PIPE_R,
+    FDT_PIPE_W
 };
+
+struct pipe;
+
+struct fdesc {
+    uint8_t      type;
+    uint32_t     off;               /* FDT_FILE */
+    struct pipe* pipe;              /* FDT_PIPE_* */
+    char         path[FD_PATH_MAX]; /* FDT_FILE */
+};
+
+#define CMDLINE_MAX 128
 
 struct process {
     uint32_t           pid;
@@ -52,20 +65,27 @@ struct process {
 
     /* Open files survive both fork and exec, Unix style. */
     struct fdesc fds[FD_MAX];
+
+    /* What to load and the argv to build, for the spawn entry thread. */
+    char cmdline[CMDLINE_MAX];
 };
 
 void process_initialize(void);
 
 struct process* process_current(void);
 
-/* Start an embedded program as a child of the current process. Returns the
- * pid, or -1 if the name isn't in the table. */
-int process_spawn(const char* name);
+/* Start a program as a child of the current process. The cmdline's first
+ * word names it: an embedded blob by bare name, or a file on the mounted
+ * filesystem by /path. The rest becomes argv. Returns pid or -1. */
+int process_spawn(const char* cmdline);
+
+/* Close one descriptor properly - pipes need their end counts dropped. */
+void process_close_fd(struct process* p, int fd);
 
 /* The syscall backends. fork/exec need the saved user frame because fork
  * duplicates it and exec rewrites it. */
 int  process_fork(struct registers* r);
-int  process_exec(struct registers* r, const char* name);
+int  process_exec(struct registers* r, const char* path, const char* args);
 int  process_wait(uint32_t* pid_out);
 void process_exit(int code) __attribute__((noreturn));
 

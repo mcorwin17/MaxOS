@@ -18,6 +18,7 @@ _start:
 
     mov eax, EXEC
     mov ebx, name
+    xor ecx, ecx        ; no argument string
     int 0x80
 
     ; still here means exec failed

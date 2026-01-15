@@ -26,8 +26,10 @@
 #define SYS_KILL      10    /* (pid, sig) */
 #define SYS_SIGRETURN 11
 #define SYS_OPEN      12    /* (path) -> fd */
-#define SYS_READ      13    /* (fd, buf, n) -> bytes; fd 0 is the console */
+#define SYS_READ      13    /* (fd, buf, n) -> bytes */
 #define SYS_CLOSE     14    /* (fd) */
+#define SYS_PIPE      15    /* (int fds[2] out) */
+#define SYS_DUP2      16    /* (oldfd, newfd) */
 
 /* Called from isr_handler when the vector is 0x80. Reads the arguments out
  * of the saved frame and writes the return value into r->eax, which popa

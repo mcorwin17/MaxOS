@@ -10,6 +10,7 @@
 #include "serial.h"
 #include "signal.h"
 #include "vfs.h"
+#include "pipe.h"
 
 #define WRITE_MAX  4096
 #define NAME_MAX   32
@@ -21,17 +22,25 @@
  * user program handing the kernel a kernel address and having it echoed back
  * through write(). */
 static int sys_write(uint32_t fd, uint32_t buf, uint32_t len) {
-    (void)fd;                       /* one console, every fd is it */
-
     if (len == 0) return 0;
     if (len > WRITE_MAX) return -1;
 
     if (!vma_user_range_ok(vma_active(), buf, len)) return -1;
 
-    const char* s = (const char*)buf;
-    for (uint32_t i = 0; i < len; ++i) console_putchar(s[i]);
+    struct process* p = process_current();
+    if (fd >= FD_MAX) return -1;
 
-    return (int)len;
+    switch (p->fds[fd].type) {
+    case FDT_CONSOLE: {
+        const char* s = (const char*)buf;
+        for (uint32_t i = 0; i < len; ++i) console_putchar(s[i]);
+        return (int)len;
+    }
+    case FDT_PIPE_W:
+        return pipe_write(p->fds[fd].pipe, (const void*)buf, len);
+    default:
+        return -1;      /* no file writes yet: the filesystem is read-only */
+    }
 }
 
 /* Strings need the byte-at-a-time treatment: length isn't known up front,
@@ -82,12 +91,20 @@ void syscall_dispatch(struct registers* r) {
         return;
 
     case SYS_EXEC: {
-        char name[NAME_MAX];
-        if (copy_user_string(name, r->ebx, NAME_MAX) != 0) {
+        char path[FD_PATH_MAX];
+        char args[CMDLINE_MAX];
+        args[0] = '\0';
+
+        if (copy_user_string(path, r->ebx, FD_PATH_MAX) != 0) {
             r->eax = (uint32_t)-1;
             return;
         }
-        r->eax = (uint32_t)process_exec(r, name);
+        if (r->ecx && copy_user_string(args, r->ecx, CMDLINE_MAX) != 0) {
+            r->eax = (uint32_t)-1;
+            return;
+        }
+
+        r->eax = (uint32_t)process_exec(r, path, args);
         return;
     }
 
@@ -125,9 +142,9 @@ void syscall_dispatch(struct registers* r) {
 
         struct process* p = process_current();
         for (int fd = FD_FIRST; fd < FD_MAX; ++fd) {
-            if (p->fds[fd].used) continue;
+            if (p->fds[fd].type != FDT_NONE) continue;
 
-            p->fds[fd].used = 1;
+            p->fds[fd].type = FDT_FILE;
             p->fds[fd].off  = 0;
             for (int i = 0; i < FD_PATH_MAX; ++i) {
                 p->fds[fd].path[i] = path[i];
@@ -146,49 +163,118 @@ void syscall_dispatch(struct registers* r) {
         uint32_t fd = r->ebx, buf = r->ecx, n = r->edx;
 
         if (n > WRITE_MAX) n = WRITE_MAX;
-        if (!vma_user_range_ok(vma_active(), buf, n)) {
+        if (fd >= FD_MAX || !vma_user_range_ok(vma_active(), buf, n)) {
             r->eax = (uint32_t)-1;
-            return;
-        }
-
-        if (fd == 0) {
-            /* Console: block for the first byte, drain what's buffered. */
-            char* out = (char*)buf;
-            uint32_t got = 0;
-            if (n > 0) {
-                out[got++] = console_getchar();
-                while (got < n && console_has_input()) {
-                    out[got++] = console_getchar();
-                }
-            }
-            r->eax = got;
             return;
         }
 
         struct process* p = process_current();
-        if (fd < FD_FIRST || fd >= FD_MAX || !p->fds[fd].used) {
+
+        switch (p->fds[fd].type) {
+        case FDT_CONSOLE: {
+            /* Block for the first byte - but a pending signal ends the wait
+             * with -1 instead. Without this, a process stuck reading the
+             * console can't be Ctrl-C'd until a keystroke arrives, and then
+             * it eats that keystroke as its dying breath. Found the hard
+             * way: a killed wc swallowed the r of the next command. */
+            while (!console_has_input()) {
+                if (p->sig_pending & ~(1u << 17)) {     /* SIGCHLD waits */
+                    r->eax = (uint32_t)-1;
+                    return;
+                }
+                __asm__ volatile("hlt");
+            }
+
+            char* out = (char*)buf;
+            uint32_t got = 0;
+            while (got < n && console_has_input()) {
+                out[got++] = console_getchar();
+            }
+            r->eax = got;
+            return;
+        }
+        case FDT_PIPE_R:
+            r->eax = (uint32_t)pipe_read(p->fds[fd].pipe, (void*)buf, n);
+            return;
+        case FDT_FILE: {
+            int got = vfs_read(p->fds[fd].path, p->fds[fd].off,
+                               (void*)buf, n);
+            if (got > 0) p->fds[fd].off += (uint32_t)got;
+            r->eax = (uint32_t)got;
+            return;
+        }
+        default:
             r->eax = (uint32_t)-1;
             return;
         }
-
-        int got = vfs_read(p->fds[fd].path, p->fds[fd].off, (void*)buf, n);
-        if (got > 0) p->fds[fd].off += (uint32_t)got;
-
-        r->eax = (uint32_t)got;
-        return;
     }
 
     case SYS_CLOSE: {
         uint32_t fd = r->ebx;
         struct process* p = process_current();
 
-        if (fd < FD_FIRST || fd >= FD_MAX || !p->fds[fd].used) {
+        if (fd >= FD_MAX || p->fds[fd].type == FDT_NONE) {
             r->eax = (uint32_t)-1;
             return;
         }
 
-        p->fds[fd].used = 0;
+        process_close_fd(p, (int)fd);
         r->eax = 0;
+        return;
+    }
+
+    case SYS_PIPE: {
+        uint32_t out = r->ebx;
+        if (!vma_user_range_ok(vma_active(), out, 8)) {
+            r->eax = (uint32_t)-1;
+            return;
+        }
+
+        struct process* p = process_current();
+
+        int rfd = -1, wfd = -1;
+        for (int fd = FD_FIRST; fd < FD_MAX; ++fd) {
+            if (p->fds[fd].type != FDT_NONE) continue;
+            if (rfd < 0) { rfd = fd; continue; }
+            wfd = fd;
+            break;
+        }
+        if (wfd < 0) { r->eax = (uint32_t)-1; return; }
+
+        struct pipe* pp = pipe_create();
+        if (!pp) { r->eax = (uint32_t)-1; return; }
+
+        p->fds[rfd].type = FDT_PIPE_R;
+        p->fds[rfd].pipe = pp;
+        p->fds[wfd].type = FDT_PIPE_W;
+        p->fds[wfd].pipe = pp;
+
+        ((int*)out)[0] = rfd;
+        ((int*)out)[1] = wfd;
+
+        r->eax = 0;
+        return;
+    }
+
+    case SYS_DUP2: {
+        uint32_t oldfd = r->ebx, newfd = r->ecx;
+        struct process* p = process_current();
+
+        if (oldfd >= FD_MAX || newfd >= FD_MAX ||
+            p->fds[oldfd].type == FDT_NONE) {
+            r->eax = (uint32_t)-1;
+            return;
+        }
+        if (oldfd == newfd) { r->eax = newfd; return; }
+
+        process_close_fd(p, (int)newfd);
+        p->fds[newfd] = p->fds[oldfd];
+
+        /* The copy is another claim on a pipe end. */
+        if (p->fds[newfd].type == FDT_PIPE_R) pipe_ref_reader(p->fds[newfd].pipe);
+        if (p->fds[newfd].type == FDT_PIPE_W) pipe_ref_writer(p->fds[newfd].pipe);
+
+        r->eax = newfd;
         return;
     }
 
