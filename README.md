@@ -41,8 +41,31 @@ It's early. No interrupts, no keyboard, no memory management, no filesystem.
 | VFS, two backends | **works**, ramfs + FAT16 |
 | FAT16 read, subdirs, MBR partitions | **works**, vs qemu's vvfat |
 | `open`/`read`/`close` fd syscalls | **works**, from ring 3 |
+| Pipes, `dup2`, SIGPIPE | **works** |
+| argv, C userspace (crt0 + mini libc) | **works** |
+| Programs loaded from the filesystem | **works** |
+| `cat file \| wc` between disk-loaded processes | **works** |
 | FAT write support | todo |
-| Userspace shell / libc | todo |
+| Userspace shell | todo |
+
+The one the whole roadmap pointed at:
+
+```
+> run /BIN/PIPELINE.BIN
+1 lines, 5 words, 31 bytes
+pipeline: done
+  pid 3 exited with 0
+```
+
+That's `cat /HELLO.TXT | wc` — two C programs compiled against a ~100-line
+libc, sitting as files on the FAT disk, loaded by the kernel's own
+filesystem code, connected by `pipe`/`fork`/`dup2`/`exec`, with EOF arriving
+because the last writer closed. The counts are right, the waits complete,
+and steady state is frame-neutral.
+
+The libc is written, not ported — `crt0.asm`, syscall wrappers, `print`,
+`printn`, `strlen`. A few hundred lines understood completely beat a couple
+hundred thousand configured.
 
 The filesystem test is the fun one. qemu's vvfat driver synthesizes a real
 FAT filesystem from a host directory, so the kernel's FAT16 reader is
@@ -206,6 +229,9 @@ halted.
 - **`make fat-test`** reads a vvfat-synthesized filesystem: names, sizes,
   contents, a multi-cluster byte sum, a subdirectory, the ramfs backend, and
   a ring-3 `open`/`read`/`close` of a host-written file.
+- **`make pipe-test`** runs the pipeline twice (the second run must be
+  frame-neutral), plus the Ctrl-C-on-blocked-read regression: a killed
+  reader must not eat the next keystroke.
 - **`make lock-test`** runs four threads incrementing a shared counter, once
   with the spinlock and once deliberately without, and requires the two to
   disagree:

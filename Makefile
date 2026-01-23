@@ -89,6 +89,32 @@ build/user_blobs.h: $(UPROGS) | build
 
 build/process.o: build/user_blobs.h
 
+# C userspace: crt0 + a small libc, linked flat at the user base. These are
+# NOT embedded in the kernel - the tests put them on the FAT disk and the
+# kernel loads them through its own filesystem.
+UCFLAGS := $(CCTARGET) -m32 -ffreestanding -nostdlib -fno-pic \
+           -ffunction-sections -mno-mmx -mno-sse -mno-sse2 -mno-80387 \
+           -fno-stack-protector -Wall -Wextra -O2 -Iuser/lib
+
+UPROGS_C := cat wc pipeline
+
+userprogs: $(patsubst %,build/%.ubin,$(shell echo $(UPROGS_C) | tr a-z A-Z))
+
+build/ucrt0.o: user/lib/crt0.asm | build
+	$(ASM) -f elf32 $< -o $@
+
+build/ulib.o: user/lib/ulib.c user/lib/ulib.h | build
+	$(CC) $(UCFLAGS) -c $< -o $@
+
+define UPROG_RULE
+build/$(shell echo $(1) | tr a-z A-Z).ubin: user/prog/$(1).c build/ucrt0.o build/ulib.o user/user.ld
+	$$(CC) $$(UCFLAGS) -c user/prog/$(1).c -o build/u_$(1).o
+	$$(LD) -m elf_i386 -T user/user.ld -o $$@ build/ucrt0.o build/u_$(1).o build/ulib.o
+endef
+$(foreach p,$(UPROGS_C),$(eval $(call UPROG_RULE,$(p))))
+
+all: userprogs
+
 build/%.o: kernel/%.c $(wildcard kernel/*.h) | build
 	$(CC) $(CFLAGS) -c $< -o $@
 
@@ -311,8 +337,42 @@ fat-test: floppy.img
 		|| { echo "fat-test: FAIL (fd syscalls from ring 3)"; exit 1; }
 	@echo "fat-test: PASS"
 
+# The roadmap's headline: cat file | wc between two processes loaded from
+# the filesystem, through a pipe. Run twice - the first run sets the heap
+# high-water mark, the second must be frame-neutral. Also checks a console-
+# blocked read dies cleanly on Ctrl-C without eating the next keystroke.
+pipe-test: floppy.img
+	@rm -rf bin/fatdir bin/pipe-test.log
+	@mkdir -p bin/fatdir/BIN
+	@printf 'hello from the host filesystem\n' > bin/fatdir/HELLO.TXT
+	@cp build/CAT.ubin bin/fatdir/BIN/CAT.BIN
+	@cp build/WC.ubin bin/fatdir/BIN/WC.BIN
+	@cp build/PIPELINE.ubin bin/fatdir/BIN/PIPELINE.BIN
+	@-{ sleep 5; printf 'run /BIN/CAT.BIN /HELLO.TXT\n'; sleep 2; \
+	    printf 'run /BIN/WC.BIN\n'; sleep 2; printf '\003'; sleep 1; \
+	    printf 'echo prompt intact\n'; sleep 1; \
+	    printf 'run /BIN/PIPELINE.BIN\n'; sleep 4; \
+	    printf 'run /BIN/PIPELINE.BIN\n'; sleep 4; } | \
+		timeout 60 $(QEMU) -fda floppy.img -boot a \
+			-drive file=fat:bin/fatdir,if=ide,snapshot=on \
+			-display none -no-reboot -serial stdio -monitor none \
+			> bin/pipe-test.log 2>&1 || true
+	@grep -q "hello from the host filesystem" bin/pipe-test.log \
+		|| { echo "pipe-test: FAIL (cat from disk)"; exit 1; }
+	@grep -q "killed by signal 2" bin/pipe-test.log \
+		|| { echo "pipe-test: FAIL (console read not interruptible)"; exit 1; }
+	@grep -q "prompt intact" bin/pipe-test.log \
+		|| { echo "pipe-test: FAIL (Ctrl-C ate a keystroke)"; exit 1; }
+	@grep -q "1 lines, 5 words, 31 bytes" bin/pipe-test.log \
+		|| { echo "pipe-test: FAIL (the pipeline)"; exit 1; }
+	@grep -q "pipeline: done" bin/pipe-test.log \
+		|| { echo "pipe-test: FAIL (waits never finished)"; exit 1; }
+	@tail -6 bin/pipe-test.log | grep -q "frame delta 0" \
+		|| { echo "pipe-test: FAIL (steady state leaks frames)"; exit 1; }
+	@echo "pipe-test: PASS"
+
 test: boot-test kernel-test fault-test shell-test user-test fork-test \
-      sig-test disk-test fat-test
+      sig-test disk-test fat-test pipe-test
 
 clean:
 	rm -rf bin build floppy.img
