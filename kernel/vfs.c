@@ -89,3 +89,27 @@ int vfs_list(const char* path, vfs_emit_fn emit, void* ctx) {
 
     return m->ops->list(rest, emit, ctx);
 }
+
+int vfs_create(const char* path) {
+    const char* rest;
+    const struct mount* m = resolve(path, &rest);
+    if (!m || !m->ops->create) return -1;
+
+    return m->ops->create(rest);
+}
+
+int vfs_write(const char* path, uint32_t off, const void* buf, uint32_t n) {
+    const char* rest;
+    const struct mount* m = resolve(path, &rest);
+    if (!m || !m->ops->write) return -1;
+
+    return m->ops->write(rest, off, buf, n);
+}
+
+int vfs_unlink(const char* path) {
+    const char* rest;
+    const struct mount* m = resolve(path, &rest);
+    if (!m || !m->ops->unlink) return -1;
+
+    return m->ops->unlink(rest);
+}

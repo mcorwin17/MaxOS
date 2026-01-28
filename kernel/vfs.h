@@ -29,6 +29,12 @@ struct fs_ops {
     int (*stat)(const char* path, struct vfs_stat* out);
     int (*read)(const char* path, uint32_t off, void* buf, uint32_t n);
     int (*list)(const char* path, vfs_emit_fn emit, void* ctx);
+
+    /* Optional: a read-only backend leaves these null and the VFS answers
+     * -1 on its behalf. */
+    int (*create)(const char* path);    /* make empty, or truncate existing */
+    int (*write)(const char* path, uint32_t off, const void* buf, uint32_t n);
+    int (*unlink)(const char* path);
 };
 
 int vfs_mount(const char* prefix, const struct fs_ops* ops);
@@ -39,5 +45,9 @@ int vfs_stat(const char* path, struct vfs_stat* out);
 int vfs_read(const char* path, uint32_t off, void* buf, uint32_t n);
 
 int vfs_list(const char* path, vfs_emit_fn emit, void* ctx);
+
+int vfs_create(const char* path);
+int vfs_write(const char* path, uint32_t off, const void* buf, uint32_t n);
+int vfs_unlink(const char* path);
 
 #endif

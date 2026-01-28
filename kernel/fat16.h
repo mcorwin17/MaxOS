@@ -1,10 +1,8 @@
-/* FAT16, read-only, through the block cache.
- *
- * Read-only is a scope choice, not a shortcut being hidden: the roadmap's
- * order is read support fully working first, write second. The test
- * filesystem comes from qemu's vvfat driver, which synthesizes real FAT
- * from a host directory - so this reader is verified against an
- * implementation that isn't mine. */
+/* FAT16 through the block cache. Reads verified against qemu's vvfat (an
+ * implementation that isn't mine); writes verified by parsing the raw image
+ * on the host afterwards, and by the file still being there on the next
+ * boot. Create, write (with chain growth), truncate and unlink; directory
+ * growth is the deliberate gap - roots have hundreds of slots. */
 
 #ifndef FAT16_H
 #define FAT16_H
@@ -13,5 +11,8 @@
  * bare or inside the first MBR partition. Quietly does nothing without a
  * disk. */
 void fat16_mount(void);
+
+/* Format the raw disk as FAT16 (destroying whatever's on it) and mount. */
+int fat16_format(void);
 
 #endif
