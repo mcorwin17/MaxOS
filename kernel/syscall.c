@@ -11,6 +11,7 @@
 #include "signal.h"
 #include "vfs.h"
 #include "pipe.h"
+#include "bcache.h"
 
 #define WRITE_MAX  4096
 #define NAME_MAX   32
@@ -38,9 +39,39 @@ static int sys_write(uint32_t fd, uint32_t buf, uint32_t len) {
     }
     case FDT_PIPE_W:
         return pipe_write(p->fds[fd].pipe, (const void*)buf, len);
-    default:
-        return -1;      /* no file writes yet: the filesystem is read-only */
+    case FDT_FILE: {
+        int got = vfs_write(p->fds[fd].path, p->fds[fd].off,
+                            (const void*)buf, len);
+        if (got > 0) p->fds[fd].off += (uint32_t)got;
+        return got;
     }
+    default:
+        return -1;
+    }
+}
+
+/* readdir plumbing: vfs_list pushes every entry, this keeps the Nth. */
+struct readdir_ctx {
+    uint32_t want;
+    uint32_t seen;
+    struct udirent* out;
+    int filled;
+};
+
+static void readdir_emit(const char* name, uint32_t size, int is_dir,
+                         void* opaque) {
+    struct readdir_ctx* c = (struct readdir_ctx*)opaque;
+
+    if (c->seen++ != c->want) return;
+
+    uint32_t i = 0;
+    for (; name[i] && i < sizeof(c->out->name) - 1; ++i) {
+        c->out->name[i] = name[i];
+    }
+    c->out->name[i]  = '\0';
+    c->out->size     = size;
+    c->out->is_dir   = (uint32_t)is_dir;
+    c->filled        = 1;
 }
 
 /* Strings need the byte-at-a-time treatment: length isn't known up front,
@@ -134,6 +165,12 @@ void syscall_dispatch(struct registers* r) {
             return;
         }
 
+        /* ecx = 1: create-or-truncate for writing. */
+        if (r->ecx == 1 && vfs_create(path) != 0) {
+            r->eax = (uint32_t)-1;
+            return;
+        }
+
         struct vfs_stat st;
         if (vfs_stat(path, &st) != 0 || st.is_dir) {
             r->eax = (uint32_t)-1;
@@ -218,8 +255,42 @@ void syscall_dispatch(struct registers* r) {
             return;
         }
 
+        /* Closing a written file is the moment it should be durable. */
+        if (p->fds[fd].type == FDT_FILE) bflush();
+
         process_close_fd(p, (int)fd);
         r->eax = 0;
+        return;
+    }
+
+    case SYS_READDIR: {
+        char path[FD_PATH_MAX];
+        if (copy_user_string(path, r->ebx, FD_PATH_MAX) != 0 ||
+            !vma_user_range_ok(vma_active(), r->edx, sizeof(struct udirent))) {
+            r->eax = (uint32_t)-1;
+            return;
+        }
+
+        struct readdir_ctx ctx = { r->ecx, 0, (struct udirent*)r->edx, 0 };
+        if (vfs_list(path, readdir_emit, &ctx) != 0 || !ctx.filled) {
+            r->eax = (uint32_t)-1;
+            return;
+        }
+
+        r->eax = 0;
+        return;
+    }
+
+    case SYS_UNLINK: {
+        char path[FD_PATH_MAX];
+        if (copy_user_string(path, r->ebx, FD_PATH_MAX) != 0) {
+            r->eax = (uint32_t)-1;
+            return;
+        }
+
+        int rc = vfs_unlink(path);
+        if (rc == 0) bflush();
+        r->eax = (uint32_t)rc;
         return;
     }
 

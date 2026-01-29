@@ -45,7 +45,8 @@ It's early. No interrupts, no keyboard, no memory management, no filesystem.
 | argv, C userspace (crt0 + mini libc) | **works** |
 | Programs loaded from the filesystem | **works** |
 | `cat file \| wc` between disk-loaded processes | **works** |
-| FAT write support | todo |
+| FAT16 write: create, grow, truncate, unlink | **works**, host-verified + survives reboot |
+| `mkfs` (kernel formats its own disk) | **works** |
 | Userspace shell | todo |
 
 The one the whole roadmap pointed at:

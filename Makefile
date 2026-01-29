@@ -96,7 +96,7 @@ UCFLAGS := $(CCTARGET) -m32 -ffreestanding -nostdlib -fno-pic \
            -ffunction-sections -mno-mmx -mno-sse -mno-sse2 -mno-80387 \
            -fno-stack-protector -Wall -Wextra -O2 -Iuser/lib
 
-UPROGS_C := cat wc pipeline
+UPROGS_C := cat wc pipeline writefile
 
 userprogs: $(patsubst %,build/%.ubin,$(shell echo $(UPROGS_C) | tr a-z A-Z))
 
@@ -371,8 +371,45 @@ pipe-test: floppy.img
 		|| { echo "pipe-test: FAIL (steady state leaks frames)"; exit 1; }
 	@echo "pipe-test: PASS"
 
+# FAT writes, proven three ways: the guest writes and re-reads a file whose
+# chain spans clusters; the recipe then parses the raw image itself (od, no
+# kernel code involved) to find the dirent and check the first bytes; and a
+# second boot without mkfs still sees the same checksum - it survived.
+write-test: floppy.img
+	@dd if=/dev/zero of=bin/d.img bs=1M count=4 status=none
+	@rm -f bin/write-test.log bin/write-test2.log
+	@-{ sleep 5; printf 'mkfs\n'; sleep 2; printf 'run writefile\n'; sleep 3; \
+	    printf 'cksum /OUT.TXT\n'; sleep 2; } | \
+		timeout 40 $(QEMU) -fda floppy.img -boot a \
+			-drive file=bin/d.img,format=raw,if=ide \
+			-display none -no-reboot -serial stdio -monitor none \
+			> bin/write-test.log 2>&1 || true
+	@grep -q "wrote and verified 5034 bytes" bin/write-test.log \
+		|| { echo "write-test: FAIL (guest write/verify)"; exit 1; }
+	@SUM=$$(grep -o "5034 bytes, sum [0-9]*" bin/write-test.log | head -1); \
+	 test -n "$$SUM" || { echo "write-test: FAIL (no cksum)"; exit 1; }; \
+	 echo "guest says: $$SUM"
+	@# host side: the dirent must be in the root directory of the raw image
+	@dd if=bin/d.img bs=512 skip=17 count=1 status=none | head -c 11 | \
+		grep -q "OUT     TXT" \
+		|| { echo "write-test: FAIL (dirent not in the image)"; exit 1; }
+	@dd if=bin/d.img bs=512 skip=49 count=1 status=none | head -c 20 | \
+		grep -q "written from ring 3" \
+		|| { echo "write-test: FAIL (data not in the image)"; exit 1; }
+	@# boot again WITHOUT mkfs: the file has to still be there
+	@-{ sleep 5; printf 'cksum /OUT.TXT\n'; sleep 2; } | \
+		timeout 30 $(QEMU) -fda floppy.img -boot a \
+			-drive file=bin/d.img,format=raw,if=ide \
+			-display none -no-reboot -serial stdio -monitor none \
+			> bin/write-test2.log 2>&1 || true
+	@S1=$$(grep -o "5034 bytes, sum [0-9]*" bin/write-test.log | head -1); \
+	 S2=$$(grep -o "5034 bytes, sum [0-9]*" bin/write-test2.log | head -1); \
+	 test -n "$$S2" -a "$$S1" = "$$S2" \
+		|| { echo "write-test: FAIL (didn't survive the reboot)"; exit 1; }
+	@echo "write-test: PASS"
+
 test: boot-test kernel-test fault-test shell-test user-test fork-test \
-      sig-test disk-test fat-test pipe-test
+      sig-test disk-test fat-test pipe-test write-test
 
 clean:
 	rm -rf bin build floppy.img

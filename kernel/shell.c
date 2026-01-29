@@ -17,6 +17,7 @@
 #include "ata.h"
 #include "bcache.h"
 #include "vfs.h"
+#include "fat16.h"
 
 #define LINE_MAX 128
 
@@ -60,6 +61,7 @@ static void cmd_dtest(const char* args);
 static void cmd_ls(const char* args);
 static void cmd_cat(const char* args);
 static void cmd_cksum(const char* args);
+static void cmd_mkfs(const char* args);
 static void cmd_sleep(const char* args);
 static void cmd_reboot(const char* args);
 static void cmd_panic(const char* args);
@@ -87,6 +89,7 @@ static const struct command commands[] = {
     { "ls",     cmd_ls,     "list a directory" },
     { "cat",    cmd_cat,    "print a file" },
     { "cksum",  cmd_cksum,  "length and byte sum of a file" },
+    { "mkfs",   cmd_mkfs,   "format the raw disk as FAT16 (destroys it)" },
     { "sleep",  cmd_sleep,  "block this thread for N ms" },
     { "reboot", cmd_reboot, "reset via the keyboard controller" },
     { "panic",  cmd_panic,  "deliberately panic, to see the handler" },
@@ -408,6 +411,16 @@ static void cmd_cksum(const char* args) {
     console_write(" bytes, sum ");
     write_number(sum);
     console_putchar('\n');
+}
+
+static void cmd_mkfs(const char* args) {
+    (void)args;
+
+    if (fat16_format() == 0) {
+        console_write("  formatted and mounted\n");
+    } else {
+        console_write("  mkfs failed\n");
+    }
 }
 
 static void cmd_sleep(const char* args) {

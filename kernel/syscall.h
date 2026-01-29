@@ -30,6 +30,15 @@
 #define SYS_CLOSE     14    /* (fd) */
 #define SYS_PIPE      15    /* (int fds[2] out) */
 #define SYS_DUP2      16    /* (oldfd, newfd) */
+#define SYS_READDIR   17    /* (path, index, struct udirent* out) */
+#define SYS_UNLINK    18    /* (path) */
+
+/* SYS_READDIR fills one of these per call; -1 past the end. */
+struct udirent {
+    char     name[16];
+    uint32_t size;
+    uint32_t is_dir;
+};
 
 /* Called from isr_handler when the vector is 0x80. Reads the arguments out
  * of the saved frame and writes the return value into r->eax, which popa
