@@ -35,6 +35,24 @@ static inline i32  close(i32 fd)                     { return syscall3(14, (u32)
 static inline i32  pipe(i32 fds[2])                  { return syscall3(15, (u32)fds, 0, 0); }
 static inline i32  dup2(i32 oldfd, i32 newfd)        { return syscall3(16, (u32)oldfd, (u32)newfd, 0); }
 
+struct udirent {
+    char name[16];
+    u32  size;
+    u32  is_dir;
+};
+
+static inline i32 readdir(const char* path, u32 index, struct udirent* out) {
+    return syscall3(17, (u32)path, index, (u32)out);
+}
+static inline i32 unlink(const char* path)           { return syscall3(18, (u32)path, 0, 0); }
+static inline i32 open_create(const char* path)      { return syscall3(12, (u32)path, 1, 0); }
+static inline i32 tcsetfg(i32 pid)                   { return syscall3(19, (u32)pid, 0, 0); }
+
+#define SIG_IGN 1u
+static inline i32 signal(i32 sig, u32 handler, u32 restorer) {
+    return syscall3(9, (u32)sig, handler, restorer);
+}
+
 u32  strlen(const char* s);
 void print(const char* s);
 void printn(u32 n);
