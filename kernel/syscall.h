@@ -32,6 +32,7 @@
 #define SYS_DUP2      16    /* (oldfd, newfd) */
 #define SYS_READDIR   17    /* (path, index, struct udirent* out) */
 #define SYS_UNLINK    18    /* (path) */
+#define SYS_TCSETFG   19    /* (pid) - who Ctrl-C goes to; 0 = me */
 
 /* SYS_READDIR fills one of these per call; -1 past the end. */
 struct udirent {

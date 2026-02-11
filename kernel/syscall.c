@@ -222,10 +222,15 @@ void syscall_dispatch(struct registers* r) {
                 __asm__ volatile("hlt");
             }
 
+            /* Echo what's consumed. The kernel shell echoes for itself
+             * through console_getchar directly; a user shell reads through
+             * here and would otherwise type invisibly. */
             char* out = (char*)buf;
             uint32_t got = 0;
             while (got < n && console_has_input()) {
-                out[got++] = console_getchar();
+                char c = console_getchar();
+                console_putchar(c);
+                out[got++] = c;
             }
             r->eax = got;
             return;
@@ -291,6 +296,19 @@ void syscall_dispatch(struct registers* r) {
         int rc = vfs_unlink(path);
         if (rc == 0) bflush();
         r->eax = (uint32_t)rc;
+        return;
+    }
+
+    case SYS_TCSETFG: {
+        /* A shell handing the terminal to its child, or (pid 0) taking it
+         * back. Restricted to your own process tree in spirit; enforced
+         * nowhere yet, like everything else permission-shaped here. */
+        struct process* target = r->ebx ? process_find(r->ebx)
+                                        : process_current();
+        if (!target) { r->eax = (uint32_t)-1; return; }
+
+        console_set_foreground(target);
+        r->eax = 0;
         return;
     }
 
