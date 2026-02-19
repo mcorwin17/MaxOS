@@ -1,11 +1,24 @@
 # MaxOS
 
-A small x86 OS I'm writing from scratch to learn how this stuff actually works.
-512-byte BIOS boot sector, loads a freestanding C kernel off a floppy image,
-switches to 32-bit protected mode and jumps to it.
+A small x86 operating system written from scratch: its own boot sector, a
+32-bit kernel with paging and preemptive multitasking, ring-3 processes with
+fork/exec/wait and copy-on-write, signals, a FAT16 filesystem it can read,
+write and format, and a userspace it boots into — a shell and coreutils
+compiled against a homemade libc, loaded off the disk by the kernel's own
+filesystem code.
 
-It's early. No interrupts, no keyboard, no memory management, no filesystem.
-[docs/roadmap.html](docs/roadmap.html) has the order I'm doing things in.
+```
+kernel_main: init is /BIN/SH.BIN
+sh: ready
+$ cat /HELLO.TXT | wc
+1 lines, 5 words, 31 bytes
+$ echo one two three > /TMP.TXT
+$ cat /TMP.TXT
+one two three
+```
+
+[docs/roadmap.html](docs/roadmap.html) has the build order and the audit this
+grew out of.
 
 ## Status
 
@@ -47,7 +60,9 @@ It's early. No interrupts, no keyboard, no memory management, no filesystem.
 | `cat file \| wc` between disk-loaded processes | **works** |
 | FAT16 write: create, grow, truncate, unlink | **works**, host-verified + survives reboot |
 | `mkfs` (kernel formats its own disk) | **works** |
-| Userspace shell | todo |
+| Coreutils: cat, wc, echo, ls, rm | **works**, loaded from disk |
+| Userspace shell: pipelines, `>` redirection | **works** |
+| Boot to userspace (`/BIN/SH.BIN` as init) | **works** |
 
 The one the whole roadmap pointed at:
 

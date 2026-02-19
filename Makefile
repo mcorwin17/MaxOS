@@ -96,7 +96,7 @@ UCFLAGS := $(CCTARGET) -m32 -ffreestanding -nostdlib -fno-pic \
            -ffunction-sections -mno-mmx -mno-sse -mno-sse2 -mno-80387 \
            -fno-stack-protector -Wall -Wextra -O2 -Iuser/lib
 
-UPROGS_C := cat wc pipeline writefile
+UPROGS_C := cat wc pipeline writefile echo ls rm sh
 
 userprogs: $(patsubst %,build/%.ubin,$(shell echo $(UPROGS_C) | tr a-z A-Z))
 
@@ -408,8 +408,40 @@ write-test: floppy.img
 		|| { echo "write-test: FAIL (didn't survive the reboot)"; exit 1; }
 	@echo "write-test: PASS"
 
+# Boot to a userspace prompt and live there: the kernel finds /BIN/SH.BIN
+# and makes it init. Pipelines, redirection into a created file, rm, and
+# both Ctrl-C behaviors - ignored at the prompt, fatal to a blocked child.
+sh-test: floppy.img
+	@rm -rf bin/fatdir bin/sh-test.log
+	@mkdir -p bin/fatdir/BIN
+	@printf 'hello from the host filesystem\n' > bin/fatdir/HELLO.TXT
+	@for b in SH CAT WC LS ECHO RM PIPELINE; do \
+		cp build/$$b.ubin bin/fatdir/BIN/$$b.BIN || exit 1; done
+	@-{ sleep 6; printf 'ls /BIN\n'; sleep 1; \
+	    printf 'cat /HELLO.TXT | wc\n'; sleep 3; \
+	    printf 'echo one two three > /TMP.TXT\n'; sleep 1; \
+	    printf 'cat /TMP.TXT\n'; sleep 1; \
+	    printf 'rm /TMP.TXT\n'; sleep 1; printf 'cat /TMP.TXT\n'; sleep 1; \
+	    printf '\003'; sleep 1; printf 'echo survived\n'; sleep 1; \
+	    printf 'wc\n'; sleep 1; printf '\003'; sleep 1; \
+	    printf 'echo still here\n'; sleep 1; } | \
+		timeout 60 $(QEMU) -fda floppy.img -boot a \
+			-drive file=fat:bin/fatdir,if=ide,snapshot=on \
+			-display none -no-reboot -serial stdio -monitor none \
+			> bin/sh-test.log 2>&1 || true
+	@grep -q "init is /BIN/SH.BIN" bin/sh-test.log || { echo "sh-test: FAIL (never became init)"; exit 1; }
+	@grep -q "sh: ready" bin/sh-test.log            || { echo "sh-test: FAIL (sh never started)"; exit 1; }
+	@grep -q "SH.BIN" bin/sh-test.log               || { echo "sh-test: FAIL (user ls)"; exit 1; }
+	@grep -q "1 lines, 5 words, 31 bytes" bin/sh-test.log || { echo "sh-test: FAIL (pipeline from the prompt)"; exit 1; }
+	@grep -q "^one two three" bin/sh-test.log       || { echo "sh-test: FAIL (redirection)"; exit 1; }
+	@grep -q "can.t open /TMP.TXT" bin/sh-test.log  || { echo "sh-test: FAIL (rm)"; exit 1; }
+	@grep -q "survived" bin/sh-test.log             || { echo "sh-test: FAIL (sh died to Ctrl-C)"; exit 1; }
+	@grep -q "killed by signal 2" bin/sh-test.log   || { echo "sh-test: FAIL (child not killable)"; exit 1; }
+	@grep -q "still here" bin/sh-test.log           || { echo "sh-test: FAIL (sh gone after child kill)"; exit 1; }
+	@echo "sh-test: PASS"
+
 test: boot-test kernel-test fault-test shell-test user-test fork-test \
-      sig-test disk-test fat-test pipe-test write-test
+      sig-test disk-test fat-test pipe-test write-test sh-test
 
 clean:
 	rm -rf bin build floppy.img

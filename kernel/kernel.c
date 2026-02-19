@@ -28,6 +28,7 @@
 #include "bcache.h"
 #include "ramfs.h"
 #include "fat16.h"
+#include "vfs.h"
 
 /* VGA text mode */
 #define VIDEO_MEMORY_ADDRESS    0xB8000
@@ -129,6 +130,32 @@ void kernel_main(void) {
     uint32_t after = pit_ticks();
     kprintf("timer: %u ticks over a 500ms sleep, uptime %ums\n",
             after - before, get_system_uptime());
+
+    /* If the disk carries a shell, boot into userspace: spawn it, hand it
+     * the terminal, respawn if it dies. The kernel shell is the fallback
+     * for disks without one - which includes every older test. */
+    struct vfs_stat st;
+    if (vfs_stat("/BIN/SH.BIN", &st) == 0 && !st.is_dir) {
+        kprintf("kernel_main: init is /BIN/SH.BIN\n");
+
+        for (;;) {
+            int pid = process_spawn("/BIN/SH.BIN");
+            if (pid < 0) {
+                kprintf("init: couldn't spawn the shell\n");
+                break;
+            }
+
+            console_set_foreground(process_find((uint32_t)pid));
+
+            uint32_t reaped = 0;
+            while (process_wait(&reaped) != -1 && reaped != (uint32_t)pid) {
+                /* stray orphans get reaped along the way */
+            }
+
+            kprintf("init: sh exited, respawning\n");
+            sleep_ms(300);      /* a dying shell shouldn't melt the CPU */
+        }
+    }
 
     kprintf("kernel_main: init done, starting shell\n");
     shell_run();
