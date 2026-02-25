@@ -29,6 +29,7 @@
 #include "ramfs.h"
 #include "fat16.h"
 #include "vfs.h"
+#include "smp.h"
 
 /* VGA text mode */
 #define VIDEO_MEMORY_ADDRESS    0xB8000
@@ -94,7 +95,21 @@ static void trigger_test_fault(void) {
 #endif
 
 
+/* From link.ld. Only the addresses matter. */
+extern char bss_start[];
+extern char bss_end[];
+
 void _start(void) {
+    /* First thing, before any static is read. The bootloader copies the
+     * image off disk and jumps here; nothing has zeroed .bss, and most of
+     * it isn't even in the file. Every uninitialized global is BIOS-era
+     * garbage until this loop runs.
+     *
+     * This was missing for months. It went unnoticed because the RAM
+     * underneath happened to be zero - until an array landed past the end
+     * of the loaded image and came up holding 0xf000fea5. */
+    for (char* p = bss_start; p < bss_end; ++p) *p = 0;
+
     kernel_main();
 
     while (1) {
@@ -211,6 +226,11 @@ void system_initialize(void) {
      * schedule and interrupts to deliver the tick. */
     pit_enable_preemption();
     thread_selftest();
+
+    /* Late on purpose: bringing up APs needs working threads, a heap, and
+     * interrupts for the bring-up delays. */
+    smp_initialize();
+    smp_selftest();
 
     clear_screen();
     set_cursor_position(0, 0);

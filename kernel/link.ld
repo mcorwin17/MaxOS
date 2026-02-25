@@ -25,11 +25,17 @@ SECTIONS
         *(.data.*)
     }
 
+    /* _start zeroes this range itself. A flat binary has no loader to do it,
+     * and .bss mostly isn't in the file - so without the loop below, every
+     * static C promises starts at zero actually starts as whatever the BIOS
+     * left in that RAM. */
+    bss_start = .;
     .bss : {
         *(COMMON)
         *(.bss)
         *(.bss.*)
     }
+    bss_end = .;
 
     kernel_end = .;     /* for the physical allocator later */
 }
