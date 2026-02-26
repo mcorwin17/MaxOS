@@ -108,11 +108,37 @@ int vmm_is_mapped(uint32_t virt)         { return vmm_is_mapped_in(kernel_pd, vi
 
 uint32_t vmm_kernel_directory(void)      { return kernel_pd; }
 
+/* Extra kernel-owned slots beyond the identity map and the heap - the LAPIC
+ * registers, so far. Anything the kernel touches while running on a
+ * process's CR3 has to be in here, or it faults the moment userspace is
+ * scheduled. */
+#define MAX_SHARED_PDE 4
+static uint32_t shared_pde[MAX_SHARED_PDE];
+static uint32_t shared_pde_count;
+
+void vmm_share_pde(uint32_t virt) {
+    uint32_t index = PD_INDEX(virt);
+
+    for (uint32_t i = 0; i < shared_pde_count; ++i) {
+        if (shared_pde[i] == index) return;
+    }
+    if (shared_pde_count >= MAX_SHARED_PDE) {
+        panic("vmm: too many shared PDEs");
+    }
+
+    shared_pde[shared_pde_count++] = index;
+}
+
 /* Which PDEs belong to the kernel and get shared into every process:
- * the identity map at the bottom and the heap's single 4 MB slot. */
+ * the identity map at the bottom, the heap's 4 MB slot, and whatever
+ * vmm_share_pde was told about. */
 static int is_kernel_pde(uint32_t index) {
     if (index < identity_tables) return 1;
     if (index == PD_INDEX(0xD0000000)) return 1;    /* HEAP_BASE */
+
+    for (uint32_t i = 0; i < shared_pde_count; ++i) {
+        if (shared_pde[i] == index) return 1;
+    }
     return 0;
 }
 
@@ -159,7 +185,13 @@ void vmm_initialize(void) {
      * hands back is immediately writable at its own address, from any
      * address space. Without that, allocating a page table can return a
      * frame you have no way to write. */
-    uint32_t ram_bytes = pmm_total_frames() * PAGE_SIZE;
+    /* Map to the end of the last E820 region, not the end of usable RAM:
+     * the ACPI tables sit in a reserved region immediately above RAM, and
+     * SMP can't find a CPU it can't read the table for. */
+    uint32_t ram_bytes = pmm_map_limit();
+    if (ram_bytes < pmm_total_frames() * PAGE_SIZE) {
+        ram_bytes = pmm_total_frames() * PAGE_SIZE;
+    }
     identity_tables = (ram_bytes + TABLE_COVERAGE - 1) / TABLE_COVERAGE;
 
     for (uint32_t t = 0; t < identity_tables; ++t) {

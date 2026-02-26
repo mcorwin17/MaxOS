@@ -31,6 +31,7 @@ static uint32_t  usable_bytes;
 /* One byte per frame, right after the bitmap. Only fork shares frames, so a
  * byte (255 owners) is plenty. */
 static uint8_t*  refcounts;
+static uint32_t  map_limit;
 
 static struct spinlock pmm_lock;
 
@@ -106,21 +107,29 @@ void pmm_initialize(void) {
 
     const struct e820_entry* e = map_entries();
 
-    /* Highest usable byte below 4G decides how big the bitmap has to be. */
-    uint64_t highest = 0;
+    /* Highest usable byte below 4G decides how big the bitmap has to be.
+     * Separately, the highest byte of ANY region decides how far to identity
+     * map - ACPI tables live in reserved regions just above usable RAM. */
+    uint64_t highest = 0, highest_any = 0;
     usable_bytes = 0;
 
     for (uint32_t i = 0; i < count; ++i) {
-        if (e[i].type != E820_USABLE) continue;
-
         uint64_t end = e[i].base + e[i].length;
         if (end > 0xFFFFFFFFull) end = 0xFFFFFFFFull;
-        if (end > highest) highest = end;
 
+        /* Skip the memory-mapped hardware regions right below 4G - mapping
+         * those is a separate decision, not "RAM the kernel can poke". */
+        if (e[i].base < 0xF0000000ull && end > highest_any) highest_any = end;
+
+        if (e[i].type != E820_USABLE) continue;
+
+        if (end > highest) highest = end;
         if (e[i].base < 0xFFFFFFFFull) {
             usable_bytes += (uint32_t)(end - e[i].base);
         }
     }
+
+    map_limit = (uint32_t)highest_any;
 
     total_frames = (uint32_t)(highest / PAGE_SIZE);
     bitmap_words = (total_frames + 31) / 32;
@@ -283,6 +292,7 @@ void pmm_selftest(void) {
     kprintf("pmm: selftest ok, %u frames allocated and returned\n", n);
 }
 
+uint32_t pmm_map_limit(void)    { return map_limit; }
 uint32_t pmm_total_frames(void) { return total_frames; }
 uint32_t pmm_free_frames(void)  { return free_frames; }
 uint32_t pmm_usable_bytes(void) { return usable_bytes; }

@@ -25,6 +25,12 @@ uint32_t pmm_total_frames(void);
 uint32_t pmm_free_frames(void);
 uint32_t pmm_usable_bytes(void);
 
+/* Highest address worth identity mapping: the end of the last E820 region
+ * of ANY type, not just usable. Firmware parks ACPI tables in reserved
+ * regions immediately above RAM, and a map that stops at usable RAM can't
+ * read them. */
+uint32_t pmm_map_limit(void);
+
 /* Prints the E820 map as the BIOS gave it to us. */
 void pmm_dump_map(void);
 

@@ -19,6 +19,11 @@ void vmm_initialize(void);
 
 uint32_t vmm_kernel_directory(void);
 
+/* Mark the 4 MB slot containing virt as kernel-owned, so every process
+ * directory copies it. Must be called before any process exists - it
+ * updates the template, not the directories already cloned from it. */
+void vmm_share_pde(uint32_t virt);
+
 /* New directory with the kernel PDEs copied in. Returns the physical (and,
  * thanks to the identity map, also virtual) address, or 0. */
 uint32_t vmm_create_directory(void);
