@@ -63,6 +63,48 @@ grew out of.
 | Coreutils: cat, wc, echo, ls, rm | **works**, loaded from disk |
 | Userspace shell: pipelines, `>` redirection | **works** |
 | Boot to userspace (`/BIN/SH.BIN` as init) | **works** |
+| SMP: ACPI/MADT, LAPIC, AP trampoline | **works**, 4 CPUs |
+| Per-CPU scheduling, reschedule IPI | **works** |
+
+SMP is the depth track. The MADT names the CPUs, INIT-SIPI-SIPI wakes them
+through a real-mode trampoline copied to `0x8000`, and each AP walks itself
+up to protected mode, paging, and C — then becomes its own idle thread and
+starts pulling work off the shared run queue:
+
+```
+smp: 4 CPUs in the MADT, lapic at 0xfee00000, BSP is lapic 0
+smp: CPU 1 (lapic 1) online
+smp: CPU 2 (lapic 2) online
+smp: CPU 3 (lapic 3) online
+smp:   cpu 0 ran 400 iterations, 62 switches
+smp:   cpu 1 ran 800 iterations, 3 switches
+smp:   cpu 2 ran 400 iterations, 2 switches
+smp:   cpu 3 ran 800 iterations, 3 switches
+smp: selftest ok, 6 x 400 = 2400 across 4 CPUs
+```
+
+The PIC only ever interrupts the boot CPU, so the PIT tick broadcasts a
+reschedule IPI — that's what preemption means on an AP. Kernel threads roam
+every CPU; user threads are pinned to CPU 0, because there's one TSS with
+one `esp0` and ring-3 transitions have to land on the right kernel stack.
+Per-CPU TSSes would lift that.
+
+**What SMP actually broke** was never the SMP code — it was three bugs that
+had been latent all along and only had a window on one CPU:
+
+- **`.bss` was never zeroed.** A flat binary has no loader to do it. Every
+  static C promises starts at zero had been starting as whatever the BIOS
+  left in RAM; it went unnoticed because that RAM happened to be zero, until
+  an array landed past the end of the loaded image and came up holding
+  `0xf000fea5`.
+- **A lost wakeup in `wait()`.** It scanned for zombies under the process
+  lock, released it, *then* marked itself WAITING. On four CPUs the child
+  exits inside that window, sets the parent READY, and the parent clobbers
+  it and sleeps forever.
+- **`fork_ret` never released the run-queue lock.** The SMP scheduler hands
+  the lock across a context switch for the incoming thread to drop — and a
+  forked child's first run enters through the interrupt-unwind path, not
+  through `schedule()`.
 
 The one the whole roadmap pointed at:
 

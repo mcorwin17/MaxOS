@@ -45,11 +45,25 @@ CFLAGS  := $(CCTARGET) -m32 -ffreestanding -nostdlib -fno-pic \
 SECTORS := 192         # keep in sync with KERNEL_SECTOR_COUNT in boot.asm
 
 CSRCS   := kernel serial panic idt pic pit console kbd shell pmm gdt vmm \
-           heap vma thread process syscall signal ata bcache vfs ramfs fat16
+           heap vma thread process syscall signal ata bcache vfs ramfs \
+           fat16 pipe smp
 ASRCS   := isr switch usermode
 
+# The AP trampoline is assembled flat (it starts in real mode at 0x8000) and
+# wrapped as a byte array the kernel copies there at runtime.
+build/trampblob.o: kernel/trampoline.asm | build
+	$(ASM) -f bin $< -o build/trampoline.bin
+	@{ echo 'BITS 32'; echo 'section .rodata'; \
+	   echo 'global tramp_blob_start'; echo 'global tramp_blob_end'; \
+	   echo 'tramp_blob_start:'; \
+	   od -An -v -t x1 build/trampoline.bin | \
+	     sed -e 's/ \([0-9a-f][0-9a-f]\)/0x\1,/g' -e 's/^/  db /' -e 's/,$$//'; \
+	   echo 'tramp_blob_end:'; } > build/trampblob.asm
+	$(ASM) -f elf32 build/trampblob.asm -o $@
+
 # kernel.o first so _start lands at the front even before link.ld sorts it
-OBJS    := $(patsubst %,build/%.o,$(CSRCS)) $(patsubst %,build/%.o,$(ASRCS))
+OBJS    := $(patsubst %,build/%.o,$(CSRCS)) $(patsubst %,build/%.o,$(ASRCS)) \
+           build/trampblob.o
 
 UPROGS  := $(wildcard user/*.asm)
 
@@ -440,8 +454,37 @@ sh-test: floppy.img
 	@grep -q "still here" bin/sh-test.log           || { echo "sh-test: FAIL (sh gone after child kill)"; exit 1; }
 	@echo "sh-test: PASS"
 
+# Four CPUs: every AP comes online, work lands on more than one of them, a
+# locked counter survives genuine parallelism, and the whole userspace stack
+# still runs. The last part is the real test - the uniprocessor bugs SMP
+# exposed were all in wait/fork paths, not in the SMP code.
+smp-test: floppy.img
+	@rm -rf bin/fatdir bin/smp-test.log
+	@mkdir -p bin/fatdir/BIN
+	@printf 'hello from the host filesystem\n' > bin/fatdir/HELLO.TXT
+	@for b in SH CAT WC LS ECHO RM; do cp build/$$b.ubin bin/fatdir/BIN/$$b.BIN || exit 1; done
+	@-{ sleep 7; printf 'ls /BIN\n'; sleep 2; \
+	    printf 'cat /HELLO.TXT | wc\n'; sleep 3; \
+	    printf 'echo smp holds up > /T.TXT\n'; sleep 2; printf 'cat /T.TXT\n'; sleep 2; } | \
+		timeout 60 $(QEMU) -fda floppy.img -boot a -smp 4 \
+			-drive file=fat:bin/fatdir,if=ide,snapshot=on \
+			-display none -no-reboot -serial stdio -monitor none \
+			> bin/smp-test.log 2>&1 || true
+	@grep -q "4 CPUs in the MADT" bin/smp-test.log || { echo "smp-test: FAIL (MADT)"; exit 1; }
+	@test $$(grep -c "online" bin/smp-test.log) -eq 3 \
+		|| { echo "smp-test: FAIL (not all APs started)"; exit 1; }
+	@grep -q "across 4 CPUs" bin/smp-test.log || { echo "smp-test: FAIL (work didn't spread)"; exit 1; }
+	@grep -q "selftest ok, 6 x 400 = 2400" bin/smp-test.log \
+		|| { echo "smp-test: FAIL (lost increments under parallelism)"; exit 1; }
+	@grep -q "sh: ready" bin/smp-test.log || { echo "smp-test: FAIL (no userspace)"; exit 1; }
+	@grep -q "1 lines, 5 words, 31 bytes" bin/smp-test.log \
+		|| { echo "smp-test: FAIL (pipeline hung on SMP)"; exit 1; }
+	@grep -q "^smp holds up" bin/smp-test.log \
+		|| { echo "smp-test: FAIL (fs write on SMP)"; exit 1; }
+	@echo "smp-test: PASS"
+
 test: boot-test kernel-test fault-test shell-test user-test fork-test \
-      sig-test disk-test fat-test pipe-test write-test sh-test
+      sig-test disk-test fat-test pipe-test write-test sh-test smp-test
 
 clean:
 	rm -rf bin build floppy.img
