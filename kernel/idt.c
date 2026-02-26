@@ -8,6 +8,7 @@
 #include "thread.h"
 #include "syscall.h"
 #include "process.h"
+#include "smp.h"
 
 #define IDT_ENTRIES     256
 #define KERNEL_CODE_SEG 0x08
@@ -132,7 +133,22 @@ void idt_initialize(void) {
     idt_set_gate(0x80, (uint32_t)(uintptr_t)isr128);
     idt[0x80].flags = 0xEF;
 
+    /* SMP vectors, delivered by the LAPIC rather than the PIC. */
+    extern void isr253(void);       /* reschedule IPI */
+    extern void isr255(void);       /* LAPIC spurious */
+    idt_set_gate(IPI_RESCHED_VEC,    (uint32_t)(uintptr_t)isr253);
+    idt_set_gate(LAPIC_SPURIOUS_VEC, (uint32_t)(uintptr_t)isr255);
+
     __asm__ volatile("lidt %0" : : "m"(idtp));
+}
+
+void idt_load_on_this_cpu(void) {
+    /* The table is shared; the register isn't. An AP starts with whatever
+     * the trampoline left in IDTR, which is nothing. */
+    __asm__ volatile("lidt %0" : : "m"(idtp));
+
+    extern void gdt_load_on_this_cpu(void);
+    gdt_load_on_this_cpu();
 }
 
 void irq_install_handler(uint8_t irq, irq_handler_fn handler) {
@@ -154,6 +170,18 @@ static void describe_page_fault(uint32_t error_code) {
 void isr_handler(struct registers* r) {
     if (r->vector == 0x80) {
         syscall_dispatch(r);
+        return;
+    }
+
+    /* LAPIC-delivered vectors. The reschedule IPI is how APs get preempted
+     * at all: the PIT only interrupts the boot CPU. */
+    if (r->vector == IPI_RESCHED_VEC) {
+        lapic_eoi();
+        schedule();
+        return;
+    }
+    if (r->vector == LAPIC_SPURIOUS_VEC) {
+        /* By spec, no EOI for a spurious interrupt. */
         return;
     }
 

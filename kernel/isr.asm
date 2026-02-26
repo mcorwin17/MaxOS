@@ -92,6 +92,10 @@ IRQ 15
 ; C side sees one consistent frame for everything.
 ISR_NOERR 128
 
+; LAPIC vectors: reschedule IPI and the spurious vector.
+ISR_NOERR 253
+ISR_NOERR 255
+
 ; The tail of isr_common, split out because a forked child's first run enters
 ; here directly: its kernel stack holds a hand-copied registers frame, and
 ; this path is what unwinds one of those into an iret.
@@ -123,7 +127,17 @@ isr_common:
     call signal_check
     add esp, 4
 
+    jmp isr_return          ; the normal path holds no run queue lock
+
+; A forked child's first run enters HERE, not at isr_common - its stack was
+; hand-built to look like a frame mid-unwind. schedule() handed it the run
+; queue lock on the way in, so it has to drop it, which the normal return
+; path above must not do.
 fork_ret:
+    extern thread_release_after_switch
+    call thread_release_after_switch
+
+isr_return:
     pop eax                 ; restore data segment
     mov ds, ax
     mov es, ax

@@ -6,6 +6,7 @@
 #include "io.h"
 #include "panic.h"
 #include "thread.h"
+#include "smp.h"
 
 #define PIT_CHANNEL0   0x40
 #define PIT_COMMAND    0x43
@@ -31,7 +32,14 @@ static void pit_on_tick(struct registers* r) {
     (void)r;
     ticks++;
 
-    if (threads_running) thread_tick(ticks);
+    if (threads_running) {
+        thread_tick(ticks);
+
+        /* The PIC only ever interrupts the boot CPU, so the other CPUs
+         * would run whatever they picked forever. The tick becomes their
+         * preemption too, by proxy. */
+        lapic_broadcast_resched();
+    }
 }
 
 void pit_initialize(uint32_t frequency_hz) {

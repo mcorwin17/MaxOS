@@ -11,17 +11,20 @@
 #include "gdt.h"
 #include "vma.h"
 #include "process.h"
+#include "smp.h"
 
 extern void context_switch(uint32_t* save_esp_here, uint32_t load_esp);
 extern void fork_ret(void);     /* isr.asm: pops a registers frame and irets */
 
 static struct thread* all_threads;      /* every thread, in creation order */
-static struct thread* current;
-static struct thread* idle;
 static uint32_t next_id;
 static struct spinlock queue_lock;
 
-struct thread* thread_current(void) { return current; }
+/* "current" is per-CPU now. Everything that used to be a global read is a
+ * lookup through the CPU this code happens to be executing on. */
+struct thread* thread_current(void) {
+    return cpus[this_cpu()].current;
+}
 
 static void copy_name(char* dst, const char* src) {
     int i = 0;
@@ -33,9 +36,13 @@ static void copy_name(char* dst, const char* src) {
  * so that returning from the entry function exits cleanly instead of
  * returning into whatever happened to be on a fresh stack. */
 static void thread_trampoline(void) {
-    struct thread* self = current;
+    struct thread* self = thread_current();
 
-    /* The switch that brought us here ran with interrupts off. */
+    /* The switch that brought us here ran with interrupts off, and it left
+     * the run queue lock held - schedule() hands it to whoever it switches
+     * to, and the receiver drops it. A thread's first run has to do that
+     * too, or the queue stays locked forever. */
+    spin_unlock(&queue_lock);
     __asm__ volatile("sti");
 
     self->entry(self->arg);
@@ -54,19 +61,21 @@ void thread_initialize(void) {
     struct thread* boot = (struct thread*)kmalloc(sizeof(struct thread));
     if (!boot) panic("thread: no memory for the boot thread");
 
-    boot->id        = next_id++;
-    boot->state     = THREAD_RUNNING;
-    boot->stack     = 0;
-    boot->wake_tick = 0;
-    boot->ran_ticks = 0;
-    boot->entry     = 0;
-    boot->arg       = 0;
-    boot->proc      = 0;            /* process_initialize fills this in */
-    boot->next      = 0;
+    boot->id         = next_id++;
+    boot->state      = THREAD_RUNNING;
+    boot->stack      = 0;
+    boot->wake_tick  = 0;
+    boot->ran_ticks  = 0;
+    boot->entry      = 0;
+    boot->arg        = 0;
+    boot->proc       = 0;           /* process_initialize fills this in */
+    boot->on_cpu     = 0;
+    boot->pinned_cpu = 0;           /* it becomes pid 0 and runs user code */
+    boot->next       = 0;
     copy_name(boot->name, "boot");
 
     all_threads = boot;
-    current     = boot;
+    cpus[0].current = boot;
 
     kprintf("thread: boot thread is id %u\n", boot->id);
 }
@@ -86,7 +95,10 @@ struct thread* thread_create(const char* name, void (*entry)(void*), void* arg) 
     t->arg       = arg;
     t->wake_tick = 0;
     t->ran_ticks = 0;
-    t->proc      = current ? current->proc : 0;    /* inherit by default */
+    struct thread* creator = thread_current();
+    t->proc      = creator ? creator->proc : 0;   /* inherit by default */
+    t->on_cpu    = -1;
+    t->pinned_cpu = -1;          /* kernel threads roam; user ones get pinned */
     copy_name(t->name, name);
 
     /* Hand-build a stack that looks exactly like one context_switch just
@@ -121,13 +133,15 @@ struct thread* thread_create_forked(const char* name,
     t->stack = (uint32_t*)kmalloc(THREAD_STACK_SIZE);
     if (!t->stack) { kfree(t); return 0; }
 
-    t->id        = next_id++;
-    t->state     = THREAD_READY;
-    t->entry     = 0;
-    t->arg       = 0;
-    t->wake_tick = 0;
-    t->ran_ticks = 0;
-    t->proc      = 0;               /* caller assigns the child process */
+    t->id         = next_id++;
+    t->state      = THREAD_READY;
+    t->entry      = 0;
+    t->arg        = 0;
+    t->wake_tick  = 0;
+    t->ran_ticks  = 0;
+    t->proc       = 0;              /* caller assigns the child process */
+    t->on_cpu     = -1;
+    t->pinned_cpu = 0;              /* user thread: only CPU 0 has its TSS */
     copy_name(t->name, name);
 
     /* Top of the stack gets a copy of the parent's interrupt frame; under
@@ -161,7 +175,7 @@ struct thread* thread_create_forked(const char* name,
 }
 
 void thread_reap(struct thread* t) {
-    if (!t || t == current) panic("thread_reap: bad target");
+    if (!t || t == thread_current()) panic("thread_reap: bad target");
     if (t->state != THREAD_DEAD) panic("thread_reap: thread isn't dead");
 
     uint32_t flags = spin_lock_irq(&queue_lock);
@@ -174,16 +188,24 @@ void thread_reap(struct thread* t) {
     kfree(t);
 }
 
-/* Round robin over the thread list, starting after the current one. */
-static struct thread* pick_next(void) {
-    struct thread* start = current ? current->next : all_threads;
+/* Round robin over the shared thread list. Called with the queue lock held.
+ *
+ * Two conditions that didn't exist on one CPU: on_cpu >= 0 means some other
+ * CPU is already running it (READY isn't enough - the state flip and the
+ * switch aren't one atomic act), and pinned_cpu restricts user threads to
+ * CPU 0, which is the only one with a TSS pointing at the right esp0. */
+static struct thread* pick_next(uint32_t cpu, struct thread* prev) {
+    struct thread* start = prev ? prev->next : all_threads;
     if (!start) start = all_threads;
 
     struct thread* t = start;
-    for (uint32_t i = 0; i < 2 * next_id + 2; ++i) {
+    for (uint32_t i = 0; i < 2 * next_id + 4; ++i) {
         if (!t) { t = all_threads; continue; }
 
-        if (t->state == THREAD_READY) return t;
+        if (t->state == THREAD_READY && t->on_cpu < 0 &&
+            (t->pinned_cpu < 0 || t->pinned_cpu == (int)cpu)) {
+            return t;
+        }
 
         t = t->next;
     }
@@ -193,24 +215,30 @@ static struct thread* pick_next(void) {
 
 void schedule(void) {
     uint32_t flags = irq_save();
+    spin_lock(&queue_lock);
 
-    struct thread* previous = current;
-    struct thread* next = pick_next();
+    uint32_t cpu = this_cpu();
+    struct thread* previous = cpus[cpu].current;
+    struct thread* next = pick_next(cpu, previous);
 
     if (!next || next == previous) {
-        /* Nothing else wants the CPU. Keep going. */
+        /* Nothing else wants this CPU. Keep going. */
+        spin_unlock(&queue_lock);
         irq_restore(flags);
         return;
     }
 
     if (previous->state == THREAD_RUNNING) previous->state = THREAD_READY;
-    next->state = THREAD_RUNNING;
-    current = next;
+    previous->on_cpu = -1;              /* released before anyone can take it */
 
-    /* Interrupts from ring 3 land on esp0. Must be the incoming thread's
-     * kernel stack, and must be set before anything can arrive from user
-     * mode on this thread. */
-    if (next->stack) {
+    next->state  = THREAD_RUNNING;
+    next->on_cpu = (int)cpu;
+    cpus[cpu].current = next;
+    cpus[cpu].sched_count++;
+
+    /* Interrupts from ring 3 land on esp0. Only CPU 0 runs user threads, so
+     * only CPU 0's TSS matters - the pin is what makes that safe. */
+    if (cpu == 0 && next->stack) {
         gdt_set_kernel_stack((uint32_t)(uintptr_t)next->stack
                              + THREAD_STACK_SIZE);
     }
@@ -224,10 +252,55 @@ void schedule(void) {
         __asm__ volatile("mov %0, %%cr3" : : "r"(next->proc->as.pd));
     }
 
+    /* The lock crosses the switch: it's released by whoever we switch TO,
+     * on its way out of its own schedule() (or out of the trampoline, for a
+     * thread's first run). Dropping it here instead would leave a window
+     * where another CPU could pick `previous` while we're still on its
+     * stack - which is the classic way to corrupt two stacks at once. */
     context_switch(&previous->esp, next->esp);
 
-    /* Back here when something switches to us again. */
+    /* Back here when something switches to us again, still holding it. */
+    spin_unlock(&queue_lock);
     irq_restore(flags);
+}
+
+/* Called from fork_ret in isr.asm. schedule() hands the run queue lock to
+ * whatever it switches to, and every entry path has to drop it: normal
+ * returns do it at the bottom of schedule(), a new thread does it in the
+ * trampoline, and a forked child - whose first run starts by unwinding an
+ * interrupt frame instead of returning from schedule() - does it here. */
+void thread_release_after_switch(void) {
+    spin_unlock(&queue_lock);
+}
+
+void thread_become_idle_ap(uint32_t cpu) {
+    /* The AP is running on its trampoline stack with no thread struct. Give
+     * it one so the scheduler has somewhere to save esp when it switches
+     * away, and register it as this CPU's idle thread. */
+    struct thread* t = (struct thread*)kmalloc(sizeof(struct thread));
+    if (!t) panic("smp: no thread struct for an AP");
+
+    t->id         = next_id++;
+    t->state      = THREAD_RUNNING;
+    t->stack      = 0;              /* the trampoline allocated it */
+    t->wake_tick  = 0;
+    t->ran_ticks  = 0;
+    t->entry      = 0;
+    t->arg        = 0;
+    t->proc       = 0;
+    t->on_cpu     = (int)cpu;
+    t->pinned_cpu = (int)cpu;       /* an idle thread belongs to its CPU */
+    copy_name(t->name, "idle-ap");
+
+    uint32_t flags = spin_lock_irq(&queue_lock);
+    t->next = 0;
+    struct thread* last = all_threads;
+    while (last->next) last = last->next;
+    last->next = t;
+    spin_unlock_irq(&queue_lock, flags);
+
+    cpus[cpu].current = t;
+    cpus[cpu].idle    = t;
 }
 
 void thread_yield(void) {
@@ -237,8 +310,9 @@ void thread_yield(void) {
 void thread_sleep_ms(uint32_t ms) {
     uint32_t flags = irq_save();
 
-    current->wake_tick = pit_ticks() + ((ms * PIT_FREQUENCY_HZ) + 999u) / 1000u;
-    current->state     = THREAD_SLEEPING;
+    struct thread* self = thread_current();
+    self->wake_tick = pit_ticks() + ((ms * PIT_FREQUENCY_HZ) + 999u) / 1000u;
+    self->state     = THREAD_SLEEPING;
 
     irq_restore(flags);
 
@@ -249,7 +323,7 @@ void thread_sleep_ms(uint32_t ms) {
 
 void thread_exit(void) {
     uint32_t flags = irq_save();
-    current->state = THREAD_DEAD;
+    thread_current()->state = THREAD_DEAD;
     irq_restore(flags);
 
     schedule();
@@ -267,7 +341,8 @@ void thread_tick(uint32_t now) {
         }
     }
 
-    if (current) current->ran_ticks++;
+    struct thread* running = cpus[this_cpu()].current;
+    if (running) running->ran_ticks++;
 
     /* Preempt every tick. A longer quantum comes later; round robin at 100 Hz
      * is plenty to prove the machinery works. */
@@ -343,8 +418,12 @@ static void idle_entry(void* arg) {
 }
 
 void thread_start_idle(void) {
-    idle = thread_create("idle", idle_entry, 0);
-    if (!idle) panic("thread: couldn't create the idle thread");
+    struct thread* t = thread_create("idle", idle_entry, 0);
+    if (!t) panic("thread: couldn't create the idle thread");
+
+    /* CPU 0's idle thread. APs make their own in thread_become_idle_ap. */
+    t->pinned_cpu = 0;
+    cpus[0].idle  = t;
 }
 
 

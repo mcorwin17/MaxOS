@@ -258,8 +258,9 @@ int process_spawn(const char* cmdline) {
         return -1;
     }
 
-    t->proc   = p;
-    p->thread = t;
+    t->proc       = p;
+    t->pinned_cpu = 0;      /* it enters ring 3, and CPU 0 owns the TSS */
+    p->thread     = t;
 
     irq_restore(irq);
     add_process(p);
@@ -409,11 +410,9 @@ int process_wait(uint32_t* pid_out) {
         if (zombie) {
             while (*link != zombie) link = &(*link)->next;
             *link = zombie->next;
-        }
 
-        spin_unlock_irq(&proc_lock, flags);
+            spin_unlock_irq(&proc_lock, flags);
 
-        if (zombie) {
             int code = zombie->exit_code;
             if (pid_out) *pid_out = zombie->pid;
 
@@ -424,11 +423,28 @@ int process_wait(uint32_t* pid_out) {
             return code;
         }
 
-        if (!have_children) return -1;
+        if (!have_children) { spin_unlock_irq(&proc_lock, flags); return -1; }
 
-        if (self->sig_pending & ~(1u << SIGCHLD)) return -2;
+        if (self->sig_pending & ~(1u << SIGCHLD)) {
+            spin_unlock_irq(&proc_lock, flags);
+            return -2;
+        }
 
+        /* WAITING goes on under the same lock that the scan ran under, and
+         * that process_exit takes to wake us.
+         *
+         * This used to release the lock first. On one CPU the window was
+         * theoretical; on four it's the common case - the child exits in
+         * that gap, sets us READY, and then we clobber it with WAITING and
+         * sleep forever. First real thing SMP broke, and it had been wrong
+         * the whole time.
+         *
+         * Between this unlock and schedule() a wakeup is still possible,
+         * but it's harmless: it leaves us READY, and schedule() only
+         * downgrades a thread that's still RUNNING. */
         thread_current()->state = THREAD_WAITING;
+        spin_unlock_irq(&proc_lock, flags);
+
         schedule();
     }
 }

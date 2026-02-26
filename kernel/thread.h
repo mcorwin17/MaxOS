@@ -40,6 +40,13 @@ struct thread {
 
     struct process* proc;   /* owning process; kernel threads use process 0 */
 
+    /* SMP. on_cpu is the claim: a thread only runs on one CPU at a time,
+     * and the run queue is shared, so READY alone isn't enough to stop two
+     * CPUs picking the same thread. pinned_cpu is -1 for kernel threads
+     * (they roam) and 0 for user threads (one TSS, one esp0). */
+    int on_cpu;
+    int pinned_cpu;
+
     char name[THREAD_NAME_MAX];
     struct thread* next;    /* all threads, not just runnable */
 };
@@ -72,6 +79,10 @@ struct thread* thread_current(void);
 uint32_t thread_count(void);
 
 void thread_start_idle(void);
+
+/* An AP adopts its trampoline stack as a thread struct so the scheduler has
+ * somewhere to save its esp, then becomes that CPU's idle thread. */
+void thread_become_idle_ap(uint32_t cpu);
 
 /* Called from the timer IRQ. Wakes anything whose deadline passed and flags
  * that the running thread should be preempted. */

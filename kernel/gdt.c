@@ -92,3 +92,23 @@ void gdt_initialize(void) {
           "i"(TSS_SELECTOR)
         : "eax", "memory");
 }
+
+/* An AP arrives on the trampoline's throwaway GDT and has to move onto the
+ * kernel's. It deliberately does NOT load the TSS: there's one TSS with one
+ * esp0, so only CPU 0 may take ring-3 transitions - which is exactly what
+ * pinning user threads to CPU 0 enforces on the other side. */
+void gdt_load_on_this_cpu(void) {
+    __asm__ volatile(
+        "lgdt (%0)\n\t"
+        "mov %1, %%ax\n\t"
+        "mov %%ax, %%ds\n\t"
+        "mov %%ax, %%es\n\t"
+        "mov %%ax, %%fs\n\t"
+        "mov %%ax, %%gs\n\t"
+        "mov %%ax, %%ss\n\t"
+        "ljmp %2, $1f\n\t"
+        "1:\n\t"
+        :
+        : "r"(&gdtp), "i"(KERNEL_DATA_SELECTOR), "i"(KERNEL_CODE_SELECTOR)
+        : "eax", "memory");
+}
