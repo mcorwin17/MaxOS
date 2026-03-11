@@ -18,6 +18,8 @@
 #include "bcache.h"
 #include "vfs.h"
 #include "fat16.h"
+#include "net.h"
+#include "pci.h"
 
 #define LINE_MAX 128
 
@@ -62,6 +64,10 @@ static void cmd_ls(const char* args);
 static void cmd_cat(const char* args);
 static void cmd_cksum(const char* args);
 static void cmd_mkfs(const char* args);
+static void cmd_net(const char* args);
+static void cmd_ping(const char* args);
+static void cmd_pci(const char* args);
+static void cmd_ip(const char* args);
 static void cmd_sleep(const char* args);
 static void cmd_reboot(const char* args);
 static void cmd_panic(const char* args);
@@ -90,6 +96,10 @@ static const struct command commands[] = {
     { "cat",    cmd_cat,    "print a file" },
     { "cksum",  cmd_cksum,  "length and byte sum of a file" },
     { "mkfs",   cmd_mkfs,   "format the raw disk as FAT16 (destroys it)" },
+    { "net",    cmd_net,    "link state and packet counts" },
+    { "ping",   cmd_ping,   "ping the gateway (or a.b.c.d)" },
+    { "ip",     cmd_ip,     "set our address: ip a.b.c.d" },
+    { "pci",    cmd_pci,    "list PCI devices" },
     { "sleep",  cmd_sleep,  "block this thread for N ms" },
     { "reboot", cmd_reboot, "reset via the keyboard controller" },
     { "panic",  cmd_panic,  "deliberately panic, to see the handler" },
@@ -421,6 +431,74 @@ static void cmd_mkfs(const char* args) {
     } else {
         console_write("  mkfs failed\n");
     }
+}
+
+static void cmd_net(const char* args) {
+    (void)args;
+
+    if (!net_up()) { console_write("  no network card\n"); return; }
+    net_stats();
+}
+
+static void cmd_pci(const char* args) {
+    (void)args;
+    pci_dump();
+}
+
+/* "10.0.2.2" -> packed address. Returns 0 if it doesn't parse. */
+static uint32_t parse_ip(const char* s) {
+    uint32_t octet[4] = { 0, 0, 0, 0 };
+
+    for (int i = 0; i < 4; ++i) {
+        if (*s < '0' || *s > '9') return 0;
+
+        uint32_t v = 0;
+        while (*s >= '0' && *s <= '9') { v = v * 10 + (uint32_t)(*s - '0'); ++s; }
+        if (v > 255) return 0;
+        octet[i] = v;
+
+        if (i < 3) {
+            if (*s != '.') return 0;
+            ++s;
+        }
+    }
+
+    return (octet[0] << 24) | (octet[1] << 16) | (octet[2] << 8) | octet[3];
+}
+
+static void cmd_ip(const char* args) {
+    if (!args[0]) { console_write("  ip <a.b.c.d>\n"); return; }
+
+    uint32_t ip = parse_ip(args);
+    if (!ip) { console_write("  ip <a.b.c.d>\n"); return; }
+
+    net_set_ip(ip);
+    console_write("  ok\n");
+}
+
+static void cmd_ping(const char* args) {
+    if (!net_up()) { console_write("  no network card\n"); return; }
+
+    uint32_t target = NET_GATEWAY_IP;
+    if (args[0]) {
+        target = parse_ip(args);
+        if (!target) { console_write("  ping <a.b.c.d>\n"); return; }
+    }
+
+    uint32_t before = net_ping_replies();
+
+    /* Four, a second apart, like everyone else's ping. The first may be
+     * lost to ARP resolution - that's the retry doing its job, not a
+     * failure. */
+    for (int i = 0; i < 4; ++i) {
+        net_ping(target);
+        thread_sleep_ms(300);
+    }
+    thread_sleep_ms(300);
+
+    console_write("  sent 4, got ");
+    write_decimal_console(net_ping_replies() - before);
+    console_write(" replies\n");
 }
 
 static void cmd_sleep(const char* args) {

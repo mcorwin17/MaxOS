@@ -73,3 +73,13 @@ void console_write(const char* str) {
         console_putchar(str[i]);
     }
 }
+
+void write_decimal_console(uint32_t value) {
+    char buf[12];
+    int i = 0;
+
+    if (value == 0) { console_putchar('0'); return; }
+
+    while (value > 0) { buf[i++] = (char)('0' + (value % 10)); value /= 10; }
+    while (i-- > 0) console_putchar(buf[i]);
+}

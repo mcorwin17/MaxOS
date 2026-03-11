@@ -24,6 +24,7 @@ int console_has_input(void);
  * readable either way round. */
 void console_putchar(char c);
 void console_write(const char* str);
+void write_decimal_console(uint32_t value);
 
 /* The foreground process is who Ctrl-C is for. While one is set, a 0x03
  * from either input source becomes SIGINT to it instead of a buffered

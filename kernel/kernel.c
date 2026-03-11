@@ -30,6 +30,9 @@
 #include "fat16.h"
 #include "vfs.h"
 #include "smp.h"
+#include "pci.h"
+#include "ne2000.h"
+#include "net.h"
 
 /* VGA text mode */
 #define VIDEO_MEMORY_ADDRESS    0xB8000
@@ -213,6 +216,9 @@ void system_initialize(void) {
     ramfs_mount();
     fat16_mount();
 
+    ne2000_initialize();
+    net_initialize();
+
     kbd_initialize();
     kprintf("kbd: PS/2 on IRQ1\n");
 
@@ -231,6 +237,13 @@ void system_initialize(void) {
      * interrupts for the bring-up delays. */
     smp_initialize();
     smp_selftest();
+
+    /* Receive is polled rather than IRQ-driven, so it needs a thread. A
+     * kernel thread, so it can run on any CPU. */
+    if (net_up()) {
+        thread_create("netpoll", net_thread, 0);
+        kprintf("net: poll thread started\n");
+    }
 
     clear_screen();
     set_cursor_position(0, 0);
