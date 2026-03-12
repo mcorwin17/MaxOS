@@ -65,6 +65,8 @@ grew out of.
 | Boot to userspace (`/BIN/SH.BIN` as init) | **works** |
 | SMP: ACPI/MADT, LAPIC, AP trampoline | **works**, 4 CPUs |
 | Per-CPU scheduling, reschedule IPI | **works** |
+| PCI enumeration | **works** |
+| NE2000 driver, ARP, IPv4, ICMP | **works**, pings and is pinged |
 
 SMP is the depth track. The MADT names the CPUs, INIT-SIPI-SIPI wakes them
 through a real-mode trampoline copied to `0x8000`, and each AP walks itself
@@ -88,6 +90,55 @@ reschedule IPI — that's what preemption means on an AP. Kernel threads roam
 every CPU; user threads are pinned to CPU 0, because there's one TSS with
 one `esp0` and ring-3 transitions have to land on the right kernel stack.
 Per-CPU TSSes would lift that.
+
+## Networking
+
+PCI enumeration finds the card, an NE2000 driver moves frames, and the stack
+does ARP, IPv4 and ICMP — enough to ping and be pinged. NE2000 over virtio-net
+on purpose: virtio is the better device and the right answer for throughput,
+but it's descriptor rings and feature negotiation before a single byte moves.
+The NE2000 is port I/O and a 16 KB on-card buffer, and the whole driver fits
+in one readable file, which is what a first NIC should be.
+
+```
+> ping
+net: echo reply from 10.0.2.2 seq 1
+net: echo reply from 10.0.2.2 seq 2
+net: echo reply from 10.0.2.2 seq 3
+net: echo reply from 10.0.2.2 seq 4
+  sent 4, got 4 replies
+```
+
+Two ways of checking it, because the guest agreeing with itself proves
+nothing:
+
+**The capture.** qemu writes a pcap of the wire — its record, not the
+kernel's. A script parses it and **recomputes every checksum independently**,
+so a stack whose sender and receiver share one misunderstanding can't pass:
+
+```
+[ 2]  74B IPv4 10.0.2.15 -> 10.0.2.2 hdrsum=OK ICMP echo-req seq=1 sum=OK
+[ 3]  74B IPv4 10.0.2.2 -> 10.0.2.15 hdrsum=OK ICMP echo-rep seq=1 sum=OK
+checksums verified independently: IP 8 ok / 0 bad, ICMP 8 ok / 0 bad
+```
+
+**Two kernels on one wire.** The gateway test only ever exercises the
+outbound half — we ask, something else answers. So `net2-test` boots two
+MaxOS guests onto a shared socket link with no host stack between them and
+has one ping the other. The responder has to serve an ARP request and an
+echo request with nothing to copy from:
+
+```
+guest A:  net: echo reply from 10.9.0.2 seq 2
+guest B:  net: echo request from 10.9.0.1, replied
+```
+
+Seq 1 is missing on purpose — the first packet is dropped while ARP
+resolves, and the next ping is the retry. That's the design, not a flake.
+
+Scope: static address, no routing table, no fragmentation, no TCP. TCP's
+state machine is a month on its own and deserves its own stretch rather
+than a footnote in this one.
 
 **What SMP actually broke** was never the SMP code — it was three bugs that
 had been latent all along and only had a window on one CPU:

@@ -46,7 +46,7 @@ SECTORS := 192         # keep in sync with KERNEL_SECTOR_COUNT in boot.asm
 
 CSRCS   := kernel serial panic idt pic pit console kbd shell pmm gdt vmm \
            heap vma thread process syscall signal ata bcache vfs ramfs \
-           fat16 pipe smp
+           fat16 pipe smp pci ne2000 net
 ASRCS   := isr switch usermode
 
 # The AP trampoline is assembled flat (it starts in real mode at 0x8000) and
@@ -483,8 +483,52 @@ smp-test: floppy.img
 		|| { echo "smp-test: FAIL (fs write on SMP)"; exit 1; }
 	@echo "smp-test: PASS"
 
+# Ping qemu's gateway and check the replies come back. The capture is the
+# real evidence: qemu writes it, not us, so the frames and checksums in it
+# were validated by something that isn't this kernel.
+net-test: floppy.img
+	@rm -f bin/net-test.log bin/net.pcap
+	@-{ sleep 6; printf 'net\n'; sleep 1; printf 'ping\n'; sleep 5; printf 'net\n'; sleep 1; } | \
+		timeout 40 $(QEMU) -fda floppy.img -boot a \
+			-netdev user,id=n0 -device ne2k_pci,netdev=n0 \
+			-object filter-dump,id=d0,netdev=n0,file=bin/net.pcap \
+			-display none -no-reboot -serial stdio -monitor none \
+			> bin/net-test.log 2>&1 || true
+	@grep -q "ne2000: found at pci" bin/net-test.log || { echo "net-test: FAIL (no card)"; exit 1; }
+	@grep -q "link    up" bin/net-test.log           || { echo "net-test: FAIL (link down)"; exit 1; }
+	@grep -q "sent 4, got 4 replies" bin/net-test.log || { echo "net-test: FAIL (no echo replies)"; exit 1; }
+	@test -s bin/net.pcap || { echo "net-test: FAIL (nothing on the wire)"; exit 1; }
+	@echo "net-test: PASS"
+
+# Two kernels on one virtual wire, no host stack between them. This is the
+# only test that exercises the INBOUND paths - guest B has to answer an ARP
+# request and an echo request with nothing to copy from.
+net2-test: floppy.img
+	@rm -f bin/net2-a.log bin/net2-b.log bin/net2.pcap
+	@( { sleep 8; printf 'ip 10.9.0.2\n'; sleep 12; printf 'net\n'; sleep 2; } | \
+	   timeout 40 $(QEMU) -fda floppy.img -boot a \
+		-netdev socket,id=n0,listen=127.0.0.1:14550 \
+		-device ne2k_pci,netdev=n0,mac=52:54:00:12:34:57 \
+		-object filter-dump,id=d0,netdev=n0,file=bin/net2.pcap \
+		-display none -no-reboot -serial stdio -monitor none \
+		> bin/net2-b.log 2>&1 || true ) &
+	@sleep 3
+	@-{ sleep 6; printf 'ip 10.9.0.1\n'; sleep 3; printf 'ping 10.9.0.2\n'; sleep 6; } | \
+		timeout 30 $(QEMU) -fda floppy.img -boot a \
+			-netdev socket,id=n0,connect=127.0.0.1:14550 \
+			-device ne2k_pci,netdev=n0,mac=52:54:00:12:34:56 \
+			-display none -no-reboot -serial stdio -monitor none \
+			> bin/net2-a.log 2>&1 || true
+	@sleep 12
+	@grep -q "echo reply from 10.9.0.2" bin/net2-a.log \
+		|| { echo "net2-test: FAIL (no reply from the other guest)"; exit 1; }
+	@grep -q "echo request from 10.9.0.1, replied" bin/net2-b.log \
+		|| { echo "net2-test: FAIL (responder never answered)"; exit 1; }
+	@echo "net2-test: PASS"
+
 test: boot-test kernel-test fault-test shell-test user-test fork-test \
-      sig-test disk-test fat-test pipe-test write-test sh-test smp-test
+      sig-test disk-test fat-test pipe-test write-test sh-test smp-test \
+      net-test net2-test
 
 clean:
 	rm -rf bin build floppy.img
