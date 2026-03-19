@@ -5,6 +5,7 @@
 #include "serial.h"
 #include "vga.h"
 #include "signal.h"
+#include "fb.h"
 
 #define BUFFER_SIZE 128     /* power of two, so the wrap is a mask */
 
@@ -58,12 +59,20 @@ void console_putchar(char c) {
          * the screen, so the two paths differ here. */
         serial_write("\b \b");
         backspace_character();
+        fb_console_putchar('\b');
         return;
     }
 
     if (c == '\n') serial_write_char('\r');
     serial_write_char(c);
-    print_character(c);
+
+    /* Once the framebuffer console is up it replaces VGA text mode - the
+     * card is in a graphics mode and 0xB8000 isn't a text buffer any more. */
+    if (fb_console_active()) {
+        fb_console_putchar(c);
+    } else {
+        print_character(c);
+    }
 }
 
 void console_write(const char* str) {

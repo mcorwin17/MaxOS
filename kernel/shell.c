@@ -20,6 +20,7 @@
 #include "fat16.h"
 #include "net.h"
 #include "pci.h"
+#include "fb.h"
 
 #define LINE_MAX 128
 
@@ -68,6 +69,8 @@ static void cmd_net(const char* args);
 static void cmd_ping(const char* args);
 static void cmd_pci(const char* args);
 static void cmd_ip(const char* args);
+static void cmd_gfx(const char* args);
+static void cmd_gcon(const char* args);
 static void cmd_sleep(const char* args);
 static void cmd_reboot(const char* args);
 static void cmd_panic(const char* args);
@@ -99,6 +102,8 @@ static const struct command commands[] = {
     { "net",    cmd_net,    "link state and packet counts" },
     { "ping",   cmd_ping,   "ping the gateway (or a.b.c.d)" },
     { "ip",     cmd_ip,     "set our address: ip a.b.c.d" },
+    { "gfx",    cmd_gfx,    "draw the framebuffer test pattern" },
+    { "gcon",   cmd_gcon,   "move the console onto the framebuffer" },
     { "pci",    cmd_pci,    "list PCI devices" },
     { "sleep",  cmd_sleep,  "block this thread for N ms" },
     { "reboot", cmd_reboot, "reset via the keyboard controller" },
@@ -464,6 +469,26 @@ static uint32_t parse_ip(const char* s) {
     }
 
     return (octet[0] << 24) | (octet[1] << 16) | (octet[2] << 8) | octet[3];
+}
+
+static void cmd_gfx(const char* args) {
+    (void)args;
+
+    if (!fb_present()) { console_write("  no framebuffer\n"); return; }
+
+    fb_console_enable(0);       /* the demo owns the screen */
+    fb_demo();
+    console_write("  drew the test pattern\n");
+}
+
+static void cmd_gcon(const char* args) {
+    (void)args;
+
+    if (!fb_present()) { console_write("  no framebuffer\n"); return; }
+
+    fb_console_enable(1);
+    console_write("console is on the framebuffer now\n");
+    console_write("1024x768, 128x48 cells, 8x16 glyphs\n");
 }
 
 static void cmd_ip(const char* args) {

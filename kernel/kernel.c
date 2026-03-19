@@ -33,6 +33,7 @@
 #include "pci.h"
 #include "ne2000.h"
 #include "net.h"
+#include "fb.h"
 
 /* VGA text mode */
 #define VIDEO_MEMORY_ADDRESS    0xB8000
@@ -149,6 +150,15 @@ void kernel_main(void) {
     kprintf("timer: %u ticks over a 500ms sleep, uptime %ums\n",
             after - before, get_system_uptime());
 
+#ifdef TEST_GFX
+    /* Draw at boot so a screenshot needs no keyboard. The guest's shell
+     * reads from serial, and the test needs serial for the log and the
+     * monitor for the screendump - there's no third channel to type on. */
+    fb_demo();
+    kprintf("gfx: test pattern drawn\n");
+    for (;;) __asm__ volatile("hlt");
+#endif
+
     /* If the disk carries a shell, boot into userspace: spawn it, hand it
      * the terminal, respawn if it dies. The kernel shell is the fallback
      * for disks without one - which includes every older test. */
@@ -218,6 +228,8 @@ void system_initialize(void) {
 
     ne2000_initialize();
     net_initialize();
+
+    fb_initialize();
 
     kbd_initialize();
     kprintf("kbd: PS/2 on IRQ1\n");
