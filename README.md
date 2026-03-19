@@ -67,6 +67,8 @@ grew out of.
 | Per-CPU scheduling, reschedule IPI | **works** |
 | PCI enumeration | **works** |
 | NE2000 driver, ARP, IPv4, ICMP | **works**, pings and is pinged |
+| VBE framebuffer, 1024x768x32 | **works**, pixel-verified |
+| Font rendering, graphical console | **works**, 8x16 glyphs |
 
 SMP is the depth track. The MADT names the CPUs, INIT-SIPI-SIPI wakes them
 through a real-mode trampoline copied to `0x8000`, and each AP walks itself
@@ -90,6 +92,41 @@ reschedule IPI — that's what preemption means on an AP. Kernel threads roam
 every CPU; user threads are pinned to CPU 0, because there's one TSS with
 one `esp0` and ring-3 transitions have to land on the right kernel stack.
 Per-CPU TSSes would lift that.
+
+## Graphics
+
+A 1024x768x32 linear framebuffer, drawing primitives, and a text console on
+top of it. Mode setting goes through the Bochs VBE dispatch interface (ports
+`0x1CE`/`0x1CF`) rather than the VESA BIOS — the BIOS route means dropping
+back to real mode or carrying a v86 monitor, while these ports work from
+protected mode with two `out` instructions. The cost is honest: it's a
+qemu/bochs interface, and real hardware wants the BIOS call, which is a
+bootloader job for the day this meets real silicon. The framebuffer itself
+is the std VGA card's PCI BAR0, found by the same enumeration the NIC uses.
+
+The font isn't hand-typed hex. A build script rasterizes a real monospace
+typeface into an 8x16 1bpp table, so the source of truth is a typeface
+rather than my memory of one — and a broken glyph is visible immediately
+because the demo prints all 95 printable characters.
+
+Verified the way the network was: **the host reads qemu's own render.**
+`gfx-test` screendumps to a PPM and checks exact pixel values at known
+coordinates — six swatch centres, three points in a gradient, and the
+background — plus a lit-pixel count across the glyph band:
+
+```
+  swatch 0 red      (  90,130) want c03030 got c03030  OK
+  gradient (255,0)  ( 295,220) want ff0040 got ff0040  OK
+  gradient (0,127)  (  40,347) want 00fe40 got 00fe40  OK
+  ASCII row rendered  1438 lit pixels in the glyph band
+GFX VERIFY: PASS
+```
+
+The gradient points matter more than the flat swatches: they're what catches
+an off-by-one in the scanline pitch, which a solid fill would hide entirely.
+The card can hand back a wider virtual width than you asked for, and drawing
+against the requested width instead of the real pitch shears the picture
+diagonally.
 
 ## Networking
 

@@ -46,7 +46,7 @@ SECTORS := 192         # keep in sync with KERNEL_SECTOR_COUNT in boot.asm
 
 CSRCS   := kernel serial panic idt pic pit console kbd shell pmm gdt vmm \
            heap vma thread process syscall signal ata bcache vfs ramfs \
-           fat16 pipe smp pci ne2000 net
+           fat16 pipe smp pci ne2000 net fb
 ASRCS   := isr switch usermode
 
 # The AP trampoline is assembled flat (it starts in real mode at 0x8000) and
@@ -526,9 +526,42 @@ net2-test: floppy.img
 		|| { echo "net2-test: FAIL (responder never answered)"; exit 1; }
 	@echo "net2-test: PASS"
 
+# Graphics, checked pixel by pixel against qemu's own render. Built with
+# -DTEST_GFX so the pattern is drawn at boot: the guest shell reads from
+# serial, and this test needs serial for the log and the monitor for the
+# screendump, which leaves no third channel to type on.
+#
+# Note the primer command - the monitor swallows whatever is sent before it
+# has settled, so the first real command has to be the second one sent.
+gfx-test:
+	@$(MAKE) --no-print-directory clean >/dev/null 2>&1
+	@$(MAKE) --no-print-directory CFLAGS_EXTRA=-DTEST_GFX floppy.img >/dev/null || exit 1
+	@rm -f bin/gfx.log bin/shot.ppm
+	@-{ sleep 7; printf 'info version\n'; sleep 1; \
+	    printf 'screendump bin/shot.ppm\n'; sleep 2; printf 'quit\n'; } | \
+		timeout 40 $(QEMU) -fda floppy.img -boot a \
+			-display none -no-reboot -serial file:bin/gfx.log -monitor stdio \
+			>/dev/null 2>&1 || true
+	@grep -q "fb: 1024x768" bin/gfx.log || { echo "gfx-test: FAIL (no mode set)"; exit 1; }
+	@grep -q "gfx: test pattern drawn" bin/gfx.log || { echo "gfx-test: FAIL (never drew)"; exit 1; }
+	@test -s bin/shot.ppm || { echo "gfx-test: FAIL (no screenshot)"; exit 1; }
+	@head -c 15 bin/shot.ppm | grep -q "1024 768" \
+		|| { echo "gfx-test: FAIL (wrong resolution)"; exit 1; }
+	@# Swatch centres, read straight out of the ppm. Offset 16 is past the
+	@# P6 header; each pixel is 3 bytes at (y*1024 + x)*3.
+	@for spec in "90:130:c03030" "210:130:30c050" "330:130:4070d0" \
+	             "450:130:d0c040" "570:130:40c0c0" "690:130:e8e8e8"; do \
+		x=$${spec%%:*}; rest=$${spec#*:}; y=$${rest%%:*}; want=$${rest#*:}; \
+		off=$$((16 + (y * 1024 + x) * 3)); \
+		got=$$(dd if=bin/shot.ppm bs=1 skip=$$off count=3 status=none | od -An -tx1 | tr -d ' \n'); \
+		test "$$got" = "$$want" || { echo "gfx-test: FAIL (pixel $$x,$$y: want $$want got $$got)"; exit 1; }; \
+	done
+	@echo "gfx-test: PASS"
+	@$(MAKE) --no-print-directory clean >/dev/null 2>&1
+
 test: boot-test kernel-test fault-test shell-test user-test fork-test \
       sig-test disk-test fat-test pipe-test write-test sh-test smp-test \
-      net-test net2-test
+      net-test net2-test gfx-test
 
 clean:
 	rm -rf bin build floppy.img
