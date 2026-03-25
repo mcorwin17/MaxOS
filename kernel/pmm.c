@@ -234,6 +234,32 @@ void pmm_free_frame(uint32_t addr) {
     spin_unlock_irq(&pmm_lock, flags);
 }
 
+uint32_t pmm_alloc_contiguous(uint32_t count) {
+    if (count == 0) return PMM_NO_FRAME;
+
+    uint32_t flags = spin_lock_irq(&pmm_lock);
+
+    uint32_t run_start = 0, run = 0;
+
+    for (uint32_t frame = 0; frame < total_frames; ++frame) {
+        if (is_used(frame)) { run = 0; continue; }
+
+        if (run == 0) run_start = frame;
+        if (++run < count) continue;
+
+        for (uint32_t i = 0; i < count; ++i) {
+            mark_used(run_start + i);
+            refcounts[run_start + i] = 1;
+        }
+
+        spin_unlock_irq(&pmm_lock, flags);
+        return run_start * PAGE_SIZE;
+    }
+
+    spin_unlock_irq(&pmm_lock, flags);
+    return PMM_NO_FRAME;
+}
+
 void pmm_ref(uint32_t addr) {
     uint32_t frame = addr / PAGE_SIZE;
 
@@ -287,6 +313,25 @@ void pmm_selftest(void) {
 
     if (free_frames != baseline) {
         panic("pmm selftest: frames leaked");
+    }
+
+    /* Contiguous runs get their own check because the interesting case is
+     * exactly the one above: allocate, free, and the low frames are no longer
+     * a clean sweep. A run that isn't really adjacent is invisible until a
+     * device DMAs across the gap. */
+    uint32_t run = pmm_alloc_contiguous(8);
+    if (run == PMM_NO_FRAME) {
+        panic("pmm selftest: no room for an 8 frame run");
+    }
+    for (uint32_t i = 0; i < 8; ++i) {
+        if (pmm_refcount(run + i * PAGE_SIZE) != 1) {
+            panic("pmm selftest: contiguous run has an unowned frame");
+        }
+    }
+    for (uint32_t i = 0; i < 8; ++i) pmm_free_frame(run + i * PAGE_SIZE);
+
+    if (free_frames != baseline) {
+        panic("pmm selftest: contiguous run leaked");
     }
 
     kprintf("pmm: selftest ok, %u frames allocated and returned\n", n);

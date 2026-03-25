@@ -15,6 +15,12 @@ void pmm_initialize(void);
 uint32_t pmm_alloc_frame(void);
 void     pmm_free_frame(uint32_t addr);
 
+/* A run of physically adjacent frames, for devices that DMA a flat range.
+ * Separate from the normal path because "allocate n times and hope they're
+ * neighbours" stops being true the moment anything has freed a frame in the
+ * middle - which the selftests do before any driver starts. */
+uint32_t pmm_alloc_contiguous(uint32_t count);
+
 /* Sharing for copy-on-write. A frame starts at count 1 when allocated;
  * pmm_ref bumps it, pmm_free_frame decrements and only really frees at
  * zero. So "free" always means "drop my claim", shared or not. */
