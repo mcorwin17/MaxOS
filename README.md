@@ -69,6 +69,8 @@ grew out of.
 | NE2000 driver, ARP, IPv4, ICMP | **works**, pings and is pinged |
 | VBE framebuffer, 1024x768x32 | **works**, pixel-verified |
 | Font rendering, graphical console | **works**, 8x16 glyphs |
+| AC97 audio, bus-master DMA | **works**, waveform-verified |
+| PC speaker, PIT channel 2 | **works**, waveform-verified |
 
 SMP is the depth track. The MADT names the CPUs, INIT-SIPI-SIPI wakes them
 through a real-mode trampoline copied to `0x8000`, and each AP walks itself
@@ -127,6 +129,95 @@ an off-by-one in the scanline pitch, which a solid fill would hide entirely.
 The card can hand back a wider virtual width than you asked for, and drawing
 against the requested width instead of the real pitch shears the picture
 diagonally.
+
+## Sound
+
+An AC97 codec driven by bus-master DMA, and the PC speaker for when a beep is
+all you want. AC97 over Sound Blaster 16 on purpose: SB16 is the easier chip,
+but it's ISA DMA — a dead-end bus with a 64 KB page limit that teaches nothing
+transferable. AC97 is a PCI device found by the same enumeration that finds
+the NIC, and it works the way real audio hardware works: you hand the card a
+list of buffer descriptors and it walks them itself.
+
+That list is the whole design. 32 descriptors, each naming a physical address
+and a sample count; `CIV` is the entry the card is playing, `LVI` is the last
+one you've filled, and the card runs until it catches up. Playing a sound is
+filling the slot after `LVI` and then moving `LVI`. Nothing is copied on a
+timer — the DMA engine reads memory directly while the CPU is elsewhere.
+
+Which is exactly why the first version didn't work. The descriptors point at
+*physical* addresses, so the buffers have to be physically contiguous, and I
+allocated them the obvious way: call the frame allocator 33 times and check
+the addresses came out adjacent. They didn't:
+
+```
+ac97: found at pci 0:4, nam 0xc000 nabm 0xc400
+ac97: couldn't get contiguous DMA memory
+```
+
+The frame allocator hands out the lowest free frame, so consecutive calls
+*are* consecutive — right up until something frees a frame in the middle. The
+pmm selftest allocates a thousand frames and returns them, vma and vmm do the
+same on a smaller scale, and by the time any driver initializes the low end of
+the bitmap is full of holes. That's a real allocator gap, not a driver
+problem: `pmm_alloc_contiguous(n)` scans for a run of `n` free frames and
+claims it atomically. The selftest for it deliberately runs *after* the
+allocate-and-free pass, because a fresh bitmap would pass no matter what.
+
+Two smaller traps worth naming. The AC97 volume registers are **attenuation** —
+`0x0000` is full volume and `0x8000` is mute, so "no sound at all" and "as loud
+as it goes" are one bit apart. And the phase accumulator wanted a 64-bit
+divide, which in a freestanding 32-bit build with no libgcc isn't slow, it's a
+link error:
+
+```
+ld.lld: error: undefined symbol: __udivdi3
+```
+
+Splitting it into a whole part and a fractional part keeps both halves inside
+32 bits, and the frequency still doesn't drift over the length of a note.
+
+Verified the same way graphics and networking were: **the host measures what
+qemu rendered.** qemu's `wav` audiodev writes every sample the DMA engine
+consumed to a file, so the pitches below are counted out of the audio itself,
+not reported by the kernel. `sound-test` plays an ascending arpeggio and the
+recipe counts zero crossings in each note window:
+
+```
+  tone 1: want ~440 Hz, measured 441 Hz, peak 19659
+  tone 2: want ~554 Hz, measured 550 Hz, peak 19659
+  tone 3: want ~659 Hz, measured 658 Hz, peak 19659
+  tone 4: want ~880 Hz, measured 883 Hz, peak 19659
+  tone 5: want ~880 Hz, measured 883 Hz, peak 19659
+sound-test: PASS
+```
+
+Four *distinct* pitches in a known order, so a driver that plays *something*
+still fails. The peak is a free second check nobody had to design: the demo
+asks for 60% volume, and 60% of a full-scale 32767 is 19660.
+
+The speaker gets the same treatment — `pcspk-audiodev` routes PIT channel 2
+into the same wav backend, so the square wave is measurable too. `beep-test`
+plays a descending set so it can't pass on a stale capture from the run above.
+The expected frequencies are computed from the divisor rather than the round
+number, because the PIT divides 1193182 by an integer and 1000 Hz isn't one of
+the results:
+
+```
+  tone 1: asked 1000 Hz  divisor 1193 -> 1000 Hz  measured  990 Hz  OK
+  tone 2: asked  750 Hz  divisor 1590 ->  750 Hz  measured  750 Hz  OK
+  tone 3: asked  500 Hz  divisor 2386 ->  500 Hz  measured  500 Hz  OK
+```
+
+The speaker shares the PIT command register with the scheduler tick. Only the
+channel bits in the command byte keep them apart, and getting those wrong
+reprograms the system timer instead of making a noise.
+
+Scope: no mixing, no volume control per stream, no audio device file. Refills
+are polled — `ac97_play` sleeps until a descriptor frees up rather than taking
+the buffer-completion interrupt. That's fine for playing a tone and wrong for
+anything that has to keep a stream fed under load; the interrupt is wired in
+the control register and unused.
 
 ## Networking
 

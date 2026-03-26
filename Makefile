@@ -67,7 +67,7 @@ OBJS    := $(patsubst %,build/%.o,$(CSRCS)) $(patsubst %,build/%.o,$(ASRCS)) \
 
 UPROGS  := $(wildcard user/*.asm)
 
-.PHONY: all clean qemu boot-test kernel-test test help
+.PHONY: all clean qemu boot-test kernel-test sound-test beep-test test help
 .DEFAULT_GOAL := all
 
 all: floppy.img
@@ -559,9 +559,78 @@ gfx-test:
 	@echo "gfx-test: PASS"
 	@$(MAKE) --no-print-directory clean >/dev/null 2>&1
 
+# Audio, checked by measuring the waveform qemu rendered. The wav audiodev
+# writes every sample the card's DMA engine consumed straight to a file, so
+# the pitches below are counted out of the audio itself rather than taken on
+# the driver's word.
+#
+# qemu patches the data chunk length when it closes the file and the guest
+# halts instead of powering off, so the length field stays 0 - hence reading
+# from offset 44 to the end rather than trusting the header.
+WAVCHECK = od -An -v -td2 -j44 $(1) | awk -v rate=48000 \
+	-v want="$(2)" -v starts="$(3)" -v win=$(4) ' \
+	{ for (j = 1; j <= NF; j++) { if (i % 2 == 0) s[int(i/2)] = $$j; i++ } } \
+	END { \
+	  nw = split(want, w, " "); split(starts, t, " "); bad = 0; \
+	  for (k = 1; k <= nw; k++) { \
+	    from = int(t[k] * rate); to = int((t[k] + win) * rate); \
+	    c = 0; pk = 0; prev = s[from]; \
+	    for (p = from + 1; p < to; p++) { \
+	      if (prev < -200 && s[p] >= -200) c++; \
+	      a = s[p] < 0 ? -s[p] : s[p]; if (a > pk) pk = a; \
+	      prev = s[p]; \
+	    } \
+	    hz = c / win; \
+	    printf "  tone %d: want ~%d Hz, measured %d Hz, peak %d\n", k, w[k], hz, pk; \
+	    if (hz < w[k] * 0.94 || hz > w[k] * 1.06 || pk < 500) bad = 1; \
+	  } \
+	  exit bad; \
+	}'
+
+# AC97: an ascending arpeggio out of the bus-master DMA engine. Four separate
+# pitches in a known order, so a driver that plays *something* still fails.
+# Built with -DTEST_SND for the same reason as gfx-test - serial is carrying
+# the log, so there's nothing left to type at the shell with.
+sound-test:
+	@$(MAKE) --no-print-directory clean >/dev/null 2>&1
+	@$(MAKE) --no-print-directory CFLAGS_EXTRA=-DTEST_SND floppy.img >/dev/null || exit 1
+	@rm -f bin/snd.log bin/out.wav
+	@-timeout 30 $(QEMU) -fda floppy.img -boot a \
+		-audiodev wav,id=snd0,path=bin/out.wav,out.frequency=48000,out.channels=2 \
+		-device AC97,audiodev=snd0 \
+		-display none -no-reboot -serial file:bin/snd.log >/dev/null 2>&1 || true
+	@grep -q "ac97: 48000 Hz" bin/snd.log || { echo "sound-test: FAIL (card never came up)"; cat bin/snd.log 2>/dev/null; exit 1; }
+	@grep -q "snd: demo finished" bin/snd.log || { echo "sound-test: FAIL (playback never returned)"; exit 1; }
+	@test -s bin/out.wav || { echo "sound-test: FAIL (nothing was rendered)"; exit 1; }
+	@# ~1.5s at 48kHz stereo is 288000 bytes; short means the DMA stalled
+	@test $$(stat -c%s bin/out.wav) -gt 250000 \
+		|| { echo "sound-test: FAIL (only $$(stat -c%s bin/out.wav) bytes of audio)"; exit 1; }
+	@$(call WAVCHECK,bin/out.wav,440 554 659 880 880,0.06 0.31 0.56 0.81 1.15,0.12) \
+		|| { echo "sound-test: FAIL (wrong pitches came out)"; exit 1; }
+	@echo "sound-test: PASS"
+	@$(MAKE) --no-print-directory clean >/dev/null 2>&1
+
+# The PC speaker, captured the same way: pcspk-audiodev routes PIT channel 2
+# into the wav backend. Descending this time so it can't pass by accident on
+# a stale capture from the run above.
+beep-test:
+	@$(MAKE) --no-print-directory clean >/dev/null 2>&1
+	@$(MAKE) --no-print-directory CFLAGS_EXTRA=-DTEST_BEEP floppy.img >/dev/null || exit 1
+	@rm -f bin/beep.log bin/beep.wav
+	@-timeout 30 $(QEMU) -fda floppy.img -boot a \
+		-audiodev wav,id=snd0,path=bin/beep.wav,out.frequency=48000,out.channels=2 \
+		-machine pc,pcspk-audiodev=snd0 \
+		-display none -no-reboot -serial file:bin/beep.log >/dev/null 2>&1 || true
+	@grep -q "snd: beeps finished" bin/beep.log || { echo "beep-test: FAIL (never finished)"; exit 1; }
+	@test -s bin/beep.wav || { echo "beep-test: FAIL (nothing was rendered)"; exit 1; }
+	@$(call WAVCHECK,bin/beep.wav,1000 750 500,0.05 0.25 0.45,0.10) \
+		|| { echo "beep-test: FAIL (wrong pitches came out)"; exit 1; }
+	@echo "beep-test: PASS"
+	@$(MAKE) --no-print-directory clean >/dev/null 2>&1
+
 test: boot-test kernel-test fault-test shell-test user-test fork-test \
       sig-test disk-test fat-test pipe-test write-test sh-test smp-test \
-      net-test net2-test gfx-test
+      net-test net2-test gfx-test sound-test beep-test
 
 clean:
 	rm -rf bin build floppy.img
