@@ -34,6 +34,8 @@
 #include "ne2000.h"
 #include "net.h"
 #include "fb.h"
+#include "ac97.h"
+#include "speaker.h"
 
 /* VGA text mode */
 #define VIDEO_MEMORY_ADDRESS    0xB8000
@@ -150,6 +152,26 @@ void kernel_main(void) {
     kprintf("timer: %u ticks over a 500ms sleep, uptime %ums\n",
             after - before, get_system_uptime());
 
+#ifdef TEST_BEEP
+    /* PIT channel 2, captured on its own so the square wave isn't mixed in
+     * with the AC97 stream. Three descending tones, 200ms each. */
+    kprintf("snd: beeping\n");
+    speaker_beep(1000, 200);
+    speaker_beep(750, 200);
+    speaker_beep(500, 200);
+    kprintf("snd: beeps finished\n");
+    for (;;) __asm__ volatile("hlt");
+#endif
+
+#ifdef TEST_SND
+    /* Same reasoning as TEST_GFX: play at boot so the test needs no
+     * keyboard, since serial is carrying the log. */
+    kprintf("snd: playing the demo\n");
+    ac97_demo();
+    kprintf("snd: demo finished\n");
+    for (;;) __asm__ volatile("hlt");
+#endif
+
 #ifdef TEST_GFX
     /* Draw at boot so a screenshot needs no keyboard. The guest's shell
      * reads from serial, and the test needs serial for the log and the
@@ -230,6 +252,7 @@ void system_initialize(void) {
     net_initialize();
 
     fb_initialize();
+    ac97_initialize();
 
     kbd_initialize();
     kprintf("kbd: PS/2 on IRQ1\n");

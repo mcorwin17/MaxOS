@@ -21,6 +21,8 @@
 #include "net.h"
 #include "pci.h"
 #include "fb.h"
+#include "ac97.h"
+#include "speaker.h"
 
 #define LINE_MAX 128
 
@@ -71,6 +73,8 @@ static void cmd_pci(const char* args);
 static void cmd_ip(const char* args);
 static void cmd_gfx(const char* args);
 static void cmd_gcon(const char* args);
+static void cmd_play(const char* args);
+static void cmd_beep(const char* args);
 static void cmd_sleep(const char* args);
 static void cmd_reboot(const char* args);
 static void cmd_panic(const char* args);
@@ -103,6 +107,8 @@ static const struct command commands[] = {
     { "ping",   cmd_ping,   "ping the gateway (or a.b.c.d)" },
     { "ip",     cmd_ip,     "set our address: ip a.b.c.d" },
     { "gfx",    cmd_gfx,    "draw the framebuffer test pattern" },
+    { "play",   cmd_play,   "AC97: play a tone, or the demo with no args" },
+    { "beep",   cmd_beep,   "PC speaker beep" },
     { "gcon",   cmd_gcon,   "move the console onto the framebuffer" },
     { "pci",    cmd_pci,    "list PCI devices" },
     { "sleep",  cmd_sleep,  "block this thread for N ms" },
@@ -469,6 +475,35 @@ static uint32_t parse_ip(const char* s) {
     }
 
     return (octet[0] << 24) | (octet[1] << 16) | (octet[2] << 8) | octet[3];
+}
+
+static void cmd_play(const char* args) {
+    if (!ac97_present()) { console_write("  no sound card\n"); return; }
+
+    if (!args[0]) {
+        console_write("  playing the demo\n");
+        ac97_demo();
+        console_write("  done\n");
+        return;
+    }
+
+    uint32_t hz = parse_number(args);
+    if (hz < 20 || hz > 20000) { console_write("  play [20-20000]\n"); return; }
+
+    console_write("  tone ");
+    write_decimal_console(hz);
+    console_write(" Hz\n");
+
+    ac97_tone(hz, 1000, 60);
+    ac97_drain();
+}
+
+static void cmd_beep(const char* args) {
+    uint32_t hz = args[0] ? parse_number(args) : 880;
+    if (hz < 20 || hz > 20000) hz = 880;
+
+    speaker_beep(hz, 300);
+    console_write("  beeped\n");
 }
 
 static void cmd_gfx(const char* args) {
