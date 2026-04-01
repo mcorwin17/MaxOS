@@ -42,7 +42,7 @@ CFLAGS  := $(CCTARGET) -m32 -ffreestanding -nostdlib -fno-pic \
            -mno-mmx -mno-sse -mno-sse2 -mno-80387 \
            -fno-stack-protector -Wall -Wextra -O2 -Ibuild $(CFLAGS_EXTRA)
 
-SECTORS := 192         # keep in sync with KERNEL_SECTOR_COUNT in boot.asm
+SECTORS := 288         # keep in sync with KERNEL_SECTOR_COUNT in boot.asm
 
 CSRCS   := kernel serial panic idt pic pit console kbd shell pmm gdt vmm \
            heap vma thread process syscall signal ata bcache vfs ramfs \

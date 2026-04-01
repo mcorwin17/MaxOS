@@ -9,7 +9,7 @@
 ; the load. From 0x10000 there is clear space all the way up to the stack.
 KERNEL_SEGMENT       equ 0x1000    ; segment, so physical 0x10000
 KERNEL_OFFSET        equ 0x10000   ; the same address, for the jump
-KERNEL_SECTOR_COUNT  equ 192       ; 96 KB
+KERNEL_SECTOR_COUNT  equ 288       ; 144 KB
 KERNEL_START_LBA     equ 1         ; LBA 0 is this sector
 STACK_TOP            equ 0x9000
 DISK_RETRY_COUNT     equ 3
