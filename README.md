@@ -5,7 +5,8 @@ A small x86 operating system written from scratch: its own boot sector, a
 fork/exec/wait and copy-on-write, signals, a FAT16 filesystem it can read,
 write and format, and a userspace it boots into — a shell and coreutils
 compiled against a homemade libc, loaded off the disk by the kernel's own
-filesystem code.
+filesystem code. Then the depth tracks: four CPUs, a TCP/IP stack that talks
+to foreign hosts, a framebuffer, and audio.
 
 ```
 kernel_main: init is /BIN/SH.BIN
@@ -67,6 +68,7 @@ grew out of.
 | Per-CPU scheduling, reschedule IPI | **works** |
 | PCI enumeration | **works** |
 | NE2000 driver, ARP, IPv4, ICMP | **works**, pings and is pinged |
+| TCP: handshake, retransmit, ordered receive | **works**, talks to a foreign stack |
 | VBE framebuffer, 1024x768x32 | **works**, pixel-verified |
 | Font rendering, graphical console | **works**, 8x16 glyphs |
 | AC97 audio, bus-master DMA | **works**, waveform-verified |
@@ -264,9 +266,86 @@ guest B:  net: echo request from 10.9.0.1, replied
 Seq 1 is missing on purpose — the first packet is dropped while ARP
 resolves, and the next ping is the retry. That's the design, not a flake.
 
-Scope: static address, no routing table, no fragmentation, no TCP. TCP's
-state machine is a month on its own and deserves its own stretch rather
-than a footnote in this one.
+Scope at this layer: static address, no routing table, no fragmentation.
+
+## TCP
+
+The connection state machine, retransmission, and enough of the rest to
+fetch a page:
+
+```
+> http 8080
+  connecting to 10.0.2.2:8080
+  connected
+HTTP/1.0 200 OK
+Content-Length: 2040
+
+MaxOS TCP works. MaxOS TCP works. MaxOS TCP works. ...
+  2081 bytes received
+```
+
+The point of a connection is that both ends believe the same thing about
+what has been delivered. Sequence numbers, the ack that moves `snd_una`,
+and the retransmit timer all exist to keep that true while the wire loses,
+duplicates and reorders things underneath.
+
+What's deliberately missing: a send window (one segment is outstanding at a
+time — stop-and-wait, correct and slow), reassembly of out-of-order
+segments (they're dropped and re-acked, so the peer resends from the hole),
+congestion control, and window scaling. Each of those is a subject rather
+than a missing line, and naming them beats implying they're there.
+
+**Verified against a stack that isn't mine.** The client test connects out
+through qemu's user networking, which means the TCP peer is qemu's own
+stack, with a real host HTTP server behind it. If our handshake, sequence
+numbers or checksums are wrong, that connection simply never forms — no
+amount of agreeing with ourselves helps. The host server independently
+confirms it received a well-formed request, and the byte count the guest
+prints has to match what the server actually wrote:
+
+```
+request from the guest (50 bytes):
+    GET / HTTP/1.0
+    Host: maxos
+    Connection: close
+server sent 2081 bytes back
+  byte count matches the server: 2081   OK
+```
+
+**And read off the wire.** `tests/tcpcheck.awk` parses qemu's capture and
+recomputes every TCP checksum over the pseudo-header, which is the check
+that catches a stack whose sender and receiver share one misunderstanding:
+
+```
+[ 1] 10.0.2.15:49152 -> 10.0.2.2:8080  SYN      seq=1989715617 len=0    sum=OK
+[ 2] 10.0.2.2:8080  -> 10.0.2.15:49152 SYN|ACK  seq=64001      len=0    sum=OK
+[ 3] 10.0.2.15:49152 -> 10.0.2.2:8080  ACK      seq=1989715618 len=0    sum=OK
+[ 4] 10.0.2.15:49152 -> 10.0.2.2:8080  ACK|PSH  seq=1989715618 len=50   sum=OK
+[ 6] 10.0.2.2:8080  -> 10.0.2.15:49152 ACK      seq=64002      len=1440 sum=OK
+[ 7] 10.0.2.2:8080  -> 10.0.2.15:49152 ACK|PSH  seq=65442      len=641  sum=OK
+[10] 10.0.2.2:8080  -> 10.0.2.15:49152 ACK|FIN  seq=66083      len=0    sum=OK
+[12] 10.0.2.15:49152 -> 10.0.2.2:8080  ACK|FIN  seq=1989715668 len=0    sum=OK
+
+tcp segments: 13
+checksums recomputed here: 13 ok / 0 bad
+payload bytes: guest->host 50, host->guest 2081
+```
+
+Connecting out only exercises the active open, so `serve` does the other
+half — `tcp-test` puts two MaxOS kernels on one socket link and has one
+accept the other:
+
+```
+guest B:  listening on 7000
+          accepted
+          got: GET / HTTP/1.0
+guest A:  connected
+          maxos echo: GET / HTTP/1.0
+```
+
+Passive open is genuinely different code: LISTEN → SYN_RCVD → ESTABLISHED
+is driven by someone else's SYN, and the close arrives as CLOSE_WAIT →
+LAST_ACK rather than FIN_WAIT. A client-only stack has never run any of it.
 
 **What SMP actually broke** was never the SMP code — it was three bugs that
 had been latent all along and only had a window on one CPU:
@@ -507,12 +586,18 @@ unknown command: nosuchcommand
   try 'help'
 ```
 
-### Known issue
+### Known issues
 
-The kernel load asks for 32 sectors in one `int 13h` call starting at CHS
-0/0/2, which runs past the 18-sector track boundary. SeaBIOS papers over it,
-real BIOSes often won't. Wants a per-track loop or LBA (`AH=42h`) before this
-ever goes near a USB stick.
+The kernel load used to ask for 32 sectors in a single `int 13h` call, which
+runs past the 18-sector track boundary — SeaBIOS papers over that, real
+BIOSes often won't. It's a per-sector loop with its own LBA→CHS conversion
+and a reset-and-retry now, so it crosses tracks and heads properly. Still
+untested on real hardware, which is the only test that counts for a boot
+sector.
+
+User threads are pinned to CPU 0. There's one TSS with one `esp0`, so every
+ring-3 transition has to land on the same kernel stack; per-CPU TSSes would
+lift it. Kernel threads already roam freely.
 
 ## Building
 
@@ -540,8 +625,27 @@ bootloader/
   switchpm.asm   CR0.PE, far jump, into the kernel
 
 kernel/
-  kernel.c       VGA text output, cursor, scrolling
-  link.ld        flat binary at 0x1000
+  kernel.c       entry, .bss zeroing, init order, kernel_main
+  idt.c isr.asm  exceptions and IRQs
+  pmm.c vmm.c    frames, paging, and the contiguous run allocator
+  heap.c vma.c   kmalloc, and the regions demand paging faults against
+  thread.c       scheduler, spinlocks, switch.asm
+  process.c      fork, exec, wait, copy-on-write, usermode.asm
+  syscall.c      int 0x80, and the pointer validation behind it
+  signal.c       delivery on the way back to ring 3, sigreturn
+  ata.c bcache.c disk, write-back cache
+  vfs.c fat16.c ramfs.c   path routing and two backends
+  pipe.c         pipe/dup2, SIGPIPE
+  smp.c          MADT, LAPIC, trampoline.asm, per-CPU run queues
+  pci.c ne2000.c network card
+  net.c tcp.c    ARP/IPv4/ICMP, and TCP on top of it
+  fb.c           VBE framebuffer and the graphical console
+  ac97.c speaker.c   bus-master audio, and the PC speaker
+  link.ld        flat binary at 0x10000
+
+tests/
+  boot-test.asm  a stub kernel that reports over serial
+  tcpcheck.awk   reads a pcap and recomputes every TCP checksum
 
 docs/
   roadmap.html   what to build next and in what order
@@ -552,12 +656,17 @@ docs/
 | | |
 |---|---|
 | E820 map from the BIOS | `0x500` – `0x804` |
-| Kernel | `0x1000`, up to 48 sectors (24 KB) |
 | Bootloader | `0x7C00` – `0x7DFF` |
+| AP trampoline (copied there at runtime) | `0x8000` |
 | Stack (real mode) | `0x9000`, grows down |
-| PMM bitmap | `0x100000` |
+| Kernel | `0x10000`, up to 288 sectors (144 KB) |
 | Stack (protected mode) | `0x90000`, grows down |
 | VGA text buffer | `0xB8000` |
+| PMM bitmap, then the frame refcounts | `0x100000` |
+
+The kernel moved from `0x1000` to `0x10000` early on: at `0x1000` it had
+24 KB before it reached the boot sector at `0x7C00`, which it is still
+executing out of during the load.
 
 The bitmap sits at 1 MB rather than straight after the kernel, which is the
 tidier-looking option and a trap: `kernel_end` is around `0x7000`, so a few KB

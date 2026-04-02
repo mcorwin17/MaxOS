@@ -67,7 +67,7 @@ OBJS    := $(patsubst %,build/%.o,$(CSRCS)) $(patsubst %,build/%.o,$(ASRCS)) \
 
 UPROGS  := $(wildcard user/*.asm)
 
-.PHONY: all clean qemu boot-test kernel-test sound-test beep-test test help
+.PHONY: all clean qemu boot-test kernel-test tcp-test sound-test beep-test test help
 .DEFAULT_GOAL := all
 
 all: floppy.img
@@ -559,6 +559,50 @@ gfx-test:
 	@echo "gfx-test: PASS"
 	@$(MAKE) --no-print-directory clean >/dev/null 2>&1
 
+# TCP between two MaxOS kernels: B accepts, A connects, data crosses both
+# ways and both ends hang up. Both ends being mine is exactly why the
+# capture matters - tests/tcpcheck.awk recomputes every checksum and reads
+# the handshake order off the wire, so a stack that misunderstands itself
+# consistently still fails.
+#
+# The stronger check doesn't live here: point `http` at qemu's gateway and
+# the peer is qemu's own TCP stack with a real server behind it. That needs
+# something listening on the host, which is not a dependency worth adding
+# to a make target.
+tcp-test: floppy.img
+	@rm -f bin/tcp-a.log bin/tcp-b.log bin/tcp.pcap
+	@( { sleep 8; printf 'ip 10.9.0.2\n'; sleep 2; printf 'serve 7000\n'; \
+	     sleep 28; } | \
+	   timeout 50 $(QEMU) -fda floppy.img -boot a \
+		-netdev socket,id=n0,listen=127.0.0.1:14560 \
+		-device ne2k_pci,netdev=n0,mac=52:54:00:12:34:67 \
+		-object filter-dump,id=d0,netdev=n0,file=bin/tcp.pcap \
+		-display none -no-reboot -serial stdio -monitor none \
+		> bin/tcp-b.log 2>&1 || true ) &
+	@sleep 3
+	@-{ sleep 7; printf 'ip 10.9.0.1\n'; sleep 2; printf 'ping 10.9.0.2\n'; \
+	    sleep 5; printf 'http 10.9.0.2:7000\n'; sleep 12; } | \
+		timeout 45 $(QEMU) -fda floppy.img -boot a \
+			-netdev socket,id=n0,connect=127.0.0.1:14560 \
+			-device ne2k_pci,netdev=n0,mac=52:54:00:12:34:66 \
+			-display none -no-reboot -serial stdio -monitor none \
+			> bin/tcp-a.log 2>&1 || true
+	@sleep 14
+	@grep -q "listening on 7000" bin/tcp-b.log \
+		|| { echo "tcp-test: FAIL (B never listened)"; exit 1; }
+	@grep -q "accepted" bin/tcp-b.log \
+		|| { echo "tcp-test: FAIL (passive open never completed)"; exit 1; }
+	@grep -q "got: GET / HTTP" bin/tcp-b.log \
+		|| { echo "tcp-test: FAIL (request never arrived)"; exit 1; }
+	@grep -q "connected" bin/tcp-a.log \
+		|| { echo "tcp-test: FAIL (A never established)"; exit 1; }
+	@grep -q "maxos echo: GET / HTTP" bin/tcp-a.log \
+		|| { echo "tcp-test: FAIL (reply never came back)"; exit 1; }
+	@test -s bin/tcp.pcap || { echo "tcp-test: FAIL (nothing on the wire)"; exit 1; }
+	@od -An -v -tu1 bin/tcp.pcap | awk -f tests/tcpcheck.awk \
+		|| { echo "tcp-test: FAIL (the capture disagrees)"; exit 1; }
+	@echo "tcp-test: PASS"
+
 # Audio, checked by measuring the waveform qemu rendered. The wav audiodev
 # writes every sample the card's DMA engine consumed straight to a file, so
 # the pitches below are counted out of the audio itself rather than taken on
@@ -630,7 +674,7 @@ beep-test:
 
 test: boot-test kernel-test fault-test shell-test user-test fork-test \
       sig-test disk-test fat-test pipe-test write-test sh-test smp-test \
-      net-test net2-test gfx-test sound-test beep-test
+      net-test net2-test tcp-test gfx-test sound-test beep-test
 
 clean:
 	rm -rf bin build floppy.img
