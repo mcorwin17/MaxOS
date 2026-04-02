@@ -19,6 +19,7 @@
 #include "vfs.h"
 #include "fat16.h"
 #include "net.h"
+#include "tcp.h"
 #include "pci.h"
 #include "fb.h"
 #include "ac97.h"
@@ -71,6 +72,8 @@ static void cmd_net(const char* args);
 static void cmd_ping(const char* args);
 static void cmd_pci(const char* args);
 static void cmd_ip(const char* args);
+static void cmd_http(const char* args);
+static void cmd_serve(const char* args);
 static void cmd_gfx(const char* args);
 static void cmd_gcon(const char* args);
 static void cmd_play(const char* args);
@@ -106,6 +109,8 @@ static const struct command commands[] = {
     { "net",    cmd_net,    "link state and packet counts" },
     { "ping",   cmd_ping,   "ping the gateway (or a.b.c.d)" },
     { "ip",     cmd_ip,     "set our address: ip a.b.c.d" },
+    { "http",   cmd_http,   "TCP: GET / from [a.b.c.d][:port]" },
+    { "serve",  cmd_serve,  "TCP: listen on a port and echo one line" },
     { "gfx",    cmd_gfx,    "draw the framebuffer test pattern" },
     { "play",   cmd_play,   "AC97: play a tone, or the demo with no args" },
     { "beep",   cmd_beep,   "PC speaker beep" },
@@ -449,6 +454,7 @@ static void cmd_net(const char* args) {
 
     if (!net_up()) { console_write("  no network card\n"); return; }
     net_stats();
+    tcp_stats();
 }
 
 static void cmd_pci(const char* args) {
@@ -475,6 +481,128 @@ static uint32_t parse_ip(const char* s) {
     }
 
     return (octet[0] << 24) | (octet[1] << 16) | (octet[2] << 8) | octet[3];
+}
+
+static int has_char(const char* s, char c) {
+    while (*s) { if (*s == c) return 1; ++s; }
+    return 0;
+}
+
+static void write_ip_console(uint32_t ip) {
+    for (int shift = 24; shift >= 0; shift -= 8) {
+        write_decimal_console((ip >> shift) & 0xFF);
+        if (shift) console_write(".");
+    }
+}
+
+/* "10.0.2.2:8080" or "8080" or nothing. The gateway is where qemu's user
+ * networking puts the host, so a bare port is the common case. */
+static void cmd_http(const char* args) {
+    if (!net_up()) { console_write("  no network card\n"); return; }
+
+    uint32_t ip   = NET_GATEWAY_IP;
+    uint32_t port = 8080;
+
+    if (args[0]) {
+        const char* colon = args;
+        while (*colon && *colon != ':') ++colon;
+
+        if (*colon == ':') {
+            uint32_t parsed = parse_ip(args);
+            if (parsed) ip = parsed;
+            port = parse_number(colon + 1);
+        } else if (args[0] >= '0' && args[0] <= '9' && !has_char(args, '.')) {
+            port = parse_number(args);
+        } else {
+            uint32_t parsed = parse_ip(args);
+            if (parsed) ip = parsed;
+        }
+    }
+
+    if (port == 0 || port > 65535) { console_write("  bad port\n"); return; }
+
+    console_write("  connecting to ");
+    write_ip_console(ip);
+    console_write(":");
+    write_decimal_console(port);
+    console_write("\n");
+
+    int id = tcp_connect(ip, (uint16_t)port, 5000);
+    if (id < 0) { console_write("  connect failed\n"); return; }
+
+    console_write("  connected\n");
+
+    static const char request[] =
+        "GET / HTTP/1.0\r\nHost: maxos\r\nConnection: close\r\n\r\n";
+
+    /* -1 for the terminator: it is not part of the request. */
+    if (tcp_send(id, request, sizeof(request) - 1) < 0) {
+        console_write("  send failed\n");
+        tcp_close(id);
+        return;
+    }
+
+    uint32_t total = 0;
+    char buf[513];
+
+    for (;;) {
+        int n = tcp_recv(id, buf, sizeof(buf) - 1, 4000);
+        if (n < 0) break;               /* peer finished */
+        if (n == 0) break;              /* nothing more within the timeout */
+
+        buf[n] = 0;
+        console_write(buf);
+        total += (uint32_t)n;
+    }
+
+    console_write("\n  ");
+    write_decimal_console(total);
+    console_write(" bytes received\n");
+
+    tcp_close(id);
+}
+
+/* Passive open, so the other side's stack drives the handshake. Reads a
+ * line, echoes it back with a prefix, and hangs up. */
+static void cmd_serve(const char* args) {
+    if (!net_up()) { console_write("  no network card\n"); return; }
+
+    uint32_t port = args[0] ? parse_number(args) : 7000;
+    if (port == 0 || port > 65535) { console_write("  bad port\n"); return; }
+
+    int id = tcp_listen((uint16_t)port);
+    if (id < 0) { console_write("  no free connection slots\n"); return; }
+
+    console_write("  listening on ");
+    write_decimal_console(port);
+    console_write("\n");
+
+    if (tcp_accept(id, 20000) < 0) {
+        console_write("  nobody connected\n");
+        tcp_close(id);
+        return;
+    }
+
+    console_write("  accepted\n");
+
+    char buf[256];
+    int n = tcp_recv(id, buf, sizeof(buf) - 1, 10000);
+
+    if (n > 0) {
+        buf[n] = 0;
+        console_write("  got: ");
+        console_write(buf);
+        console_write("\n");
+
+        static const char prefix[] = "maxos echo: ";
+        tcp_send(id, prefix, sizeof(prefix) - 1);
+        tcp_send(id, buf, (uint32_t)n);
+    } else {
+        console_write("  nothing arrived\n");
+    }
+
+    tcp_close(id);
+    console_write("  closed\n");
 }
 
 static void cmd_play(const char* args) {

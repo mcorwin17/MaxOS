@@ -1,8 +1,9 @@
 /*
  * MaxOS kernel.
  *
- * Entered from the bootloader at 0x1000, already in 32-bit protected mode with
- * a flat GDT. Freestanding: no libc, no runtime, nothing set up for us.
+ * Entered from the bootloader at 0x10000, already in 32-bit protected mode
+ * with a flat GDT. Freestanding: no libc, no runtime, nothing set up for us -
+ * including .bss, which _start zeroes before anything reads a static.
  */
 
 #include <stdint.h>
@@ -33,6 +34,7 @@
 #include "pci.h"
 #include "ne2000.h"
 #include "net.h"
+#include "tcp.h"
 #include "fb.h"
 #include "ac97.h"
 #include "speaker.h"
@@ -250,6 +252,7 @@ void system_initialize(void) {
 
     ne2000_initialize();
     net_initialize();
+    tcp_initialize();
 
     fb_initialize();
     ac97_initialize();

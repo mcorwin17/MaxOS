@@ -1,8 +1,8 @@
 /* Ethernet / ARP / IPv4 / ICMP.
  *
- * Enough to be pinged and to ping back. Static address, no routing table,
- * no fragmentation, no TCP - TCP's state machine is a month on its own and
- * deserves its own week rather than a footnote in this one.
+ * Static address, no routing table, no fragmentation. TCP sits on top of
+ * this in tcp.c rather than in here - the split is the point, IP has no
+ * opinion about what protocol 6 means.
  *
  * Everything on the wire is big-endian, so every multi-byte field crosses
  * a byte-swap on the way in and out. Getting that wrong is the classic way
@@ -27,6 +27,12 @@ int  net_up(void);
  * on behalf of an identity we no longer have. */
 void     net_set_ip(uint32_t ip);
 uint32_t net_our_ip(void);
+
+/* Wrap a payload in an IPv4 header and put it on the wire. Public because
+ * TCP lives in its own file - IP doesn't need to know what protocol 6 is,
+ * and TCP doesn't need to know what a MAC address is. */
+void net_send_ip(uint32_t dst_ip, uint8_t protocol,
+                 const void* payload, uint32_t len);
 
 /* Feed one received ethernet frame to the stack. */
 void net_input(const uint8_t* frame, uint32_t len);

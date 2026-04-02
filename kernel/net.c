@@ -1,6 +1,7 @@
 #include <stdint.h>
 
 #include "net.h"
+#include "tcp.h"
 #include "ne2000.h"
 #include "serial.h"
 #include "console.h"
@@ -13,6 +14,7 @@
 #define ARP_REPLY   2
 
 #define IP_PROTO_ICMP 1
+#define IP_PROTO_TCP  6
 
 #define ICMP_ECHO_REPLY   0
 #define ICMP_ECHO_REQUEST 8
@@ -213,8 +215,8 @@ static void handle_arp(const uint8_t* payload, uint32_t len) {
     }
 }
 
-static void send_ip(uint32_t dst_ip, uint8_t protocol,
-                    const void* payload, uint32_t len) {
+void net_send_ip(uint32_t dst_ip, uint8_t protocol,
+                 const void* payload, uint32_t len) {
     const uint8_t* dst_mac = arp_lookup(dst_ip);
     if (!dst_mac) {
         /* No mapping yet: ask, and drop this one. A real stack would queue
@@ -266,7 +268,7 @@ static void handle_icmp(uint32_t src_ip, const uint8_t* payload,
         out->checksum = 0;
         out->checksum = hton16(checksum(reply, len));
 
-        send_ip(src_ip, IP_PROTO_ICMP, reply, len);
+        net_send_ip(src_ip, IP_PROTO_ICMP, reply, len);
 
         kprintf("net: echo request from %u.%u.%u.%u, replied\n",
                 (src_ip >> 24) & 0xFF, (src_ip >> 16) & 0xFF,
@@ -303,6 +305,9 @@ static void handle_ip(const uint8_t* payload, uint32_t len) {
     if (ip->protocol == IP_PROTO_ICMP) {
         handle_icmp(ntoh32(ip->src), payload + header_len,
                     total - header_len);
+    } else if (ip->protocol == IP_PROTO_TCP) {
+        tcp_input(ntoh32(ip->src), payload + header_len,
+                  total - header_len);
     }
 }
 
@@ -353,6 +358,7 @@ void net_thread(void* arg) {
 
     for (;;) {
         net_poll();
+        tcp_tick();             /* retransmit timers live on this thread */
         thread_sleep_ms(10);    /* 100Hz is plenty for ping cadence */
     }
 }
@@ -375,7 +381,7 @@ int net_ping(uint32_t dest_ip) {
 
     echo.hdr.checksum = hton16(checksum(&echo, sizeof(echo)));
 
-    send_ip(dest_ip, IP_PROTO_ICMP, &echo, sizeof(echo));
+    net_send_ip(dest_ip, IP_PROTO_ICMP, &echo, sizeof(echo));
     return 0;
 }
 

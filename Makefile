@@ -46,7 +46,7 @@ SECTORS := 288         # keep in sync with KERNEL_SECTOR_COUNT in boot.asm
 
 CSRCS   := kernel serial panic idt pic pit console kbd shell pmm gdt vmm \
            heap vma thread process syscall signal ata bcache vfs ramfs \
-           fat16 pipe smp pci ne2000 net fb ac97 speaker
+           fat16 pipe smp pci ne2000 net tcp fb ac97 speaker
 ASRCS   := isr switch usermode
 
 # The AP trampoline is assembled flat (it starts in real mode at 0x8000) and
