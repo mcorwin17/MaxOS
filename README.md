@@ -1,5 +1,7 @@
 # MaxOS
 
+*September 2025 to April 2026*
+
 A small x86 operating system written from scratch: its own boot sector, a
 32-bit kernel with paging and preemptive multitasking, ring-3 processes with
 fork/exec/wait and copy-on-write, signals, a FAT16 filesystem it can read,
